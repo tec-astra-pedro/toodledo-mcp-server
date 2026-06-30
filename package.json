@@ -1,0 +1,27 @@
+{
+  "name": "toodledo-mcp-server",
+  "version": "1.0.0",
+  "description": "MCP server for Toodledo task management",
+  "main": "build/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "rimraf build && tsc",
+    "start": "node build/index.js",
+    "dev": "ts-node src/index.ts",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "axios": "^1.18.1",
+    "dotenv": "^17.4.2"
+  },
+  "devDependencies": {
+    "@types/node": "^26.0.1",
+    "rimraf": "^6.1.3",
+    "ts-node": "^10.9.2",
+    "typescript": "^6.0.3"
+  }
+}
