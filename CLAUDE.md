@@ -24,7 +24,7 @@ This project is a Model Context Protocol (MCP) server for the Toodledo task mana
     - OAuth2 authentication (Client ID/Secret).
     - Automatic access token management and refreshing.
     - Resilient request execution with automatic retry on 401 errors.
-- `build/`: The distribution directory containing the compiled JavaScript.
+- `build/`: The distribution directory containing the compiled JavaScript. Gitignored — fully regenerable via `npm run build`, never commit it.
 
 ### Key Technologies
 - **Language**: TypeScript (ESM/NodeNext)
@@ -34,6 +34,16 @@ This project is a Model Context Protocol (MCP) server for the Toodledo task mana
 
 ## Implementation Strategy
 The project follows a "Local-First" development strategy. The current implementation uses the `stdio` transport for direct integration with Claude Desktop. The architecture is designed to be refactored to a "Hosted Service" (SSE transport) with minimal changes to the core `ToodledoClient` logic.
+
+## Git Workflow
+- Keep commits small and single-concern (e.g. docs, config/tooling, and feature code as separate commits) rather than bundling unrelated changes — split by what the change *is*, not just by when it happened to land.
+- For any non-trivial change (anything beyond a one-line doc fix): create a feature branch, commit there, push the branch, and open a PR into `main`. The CI workflow (`.github/workflows/ci.yml`, runs `npm run build` + `npm test`) runs on every PR and should be green before merging.
+- Never commit changes to `CLAUDE.md` or other agent-instruction files without the user reading the diff and explicitly confirming first, even if a broader "commit everything" request was already approved.
+
+## Planning & Decision Records
+- Design and implementation plans are recorded in `docs/adr/`, numbered chronologically (`0001-...`, `0002-...`, descriptive kebab-case names). Check there first for the rationale behind existing architecture and past decisions before re-deriving it from scratch.
+- These are point-in-time records (ADR convention, see [adr.github.io](https://adr.github.io/)) — never edit a past one to reflect a new decision; add a new sequentially-numbered file instead.
+- When a non-trivial planning session (e.g. Claude Code's plan mode) results in real implementation work, save a copy of the finalized plan into `docs/adr/` with the next sequential number. This makes it visible to any tool or collaborator working on this repo, not just a Claude Code instance with access to a local `~/.claude/plans/` directory.
 
 ## MCP SDK Notes
 - Installed version: check `node_modules/@modelcontextprotocol/sdk/package.json` (types live in `dist/esm/types.d.ts`, runtime behavior in `dist/esm/server/index.js`) — don't assume spec behavior without checking the installed version, the SDK's surface changes across releases.
