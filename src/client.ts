@@ -85,7 +85,7 @@ export class ToodledoClient {
     } catch (error: any) {
       if (error.response?.status === 401 && this.refreshToken) {
         await this.refreshAccessToken();
-        return this.client.request<T>({
+        return this.request<T>({
           ...config,
           headers: {
             ...config.headers,
@@ -96,6 +96,8 @@ export class ToodledoClient {
       throw error;
     }
   }
+
+  // --- API Methods ---
 
   async getTasks(params?: any): Promise<ToodledoTask[]> {
     return this.request<ToodledoTask[]>({ method: 'GET', url: '/tasks/get.php', params });
@@ -125,6 +127,7 @@ export class ToodledoClient {
     });
   }
 
+  // --- Notes ---
   async getNotes(params?: any): Promise<ToodledoNote[]> {
     return this.request<ToodledoNote[]>({ method: 'GET', url: '/notes/get.php', params });
   }
@@ -153,6 +156,7 @@ export class ToodledoClient {
     });
   }
 
+  // --- Lists ---
   async getLists(params?: any): Promise<ToodledoList[]> {
     return this.request<ToodledoList[]>({ method: 'GET', url: '/lists/get.php', params });
   }
@@ -181,6 +185,7 @@ export class ToodledoClient {
     });
   }
 
+  // --- Folders ---
   async getFolders(params?: any): Promise<ToodledoFolder[]> {
     return this.request<ToodledoFolder[]>({ method: 'GET', url: '/folders/get.php', params });
   }
