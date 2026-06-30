@@ -38,6 +38,7 @@ The project follows a "Local-First" development strategy. The current implementa
 ## Git Workflow
 - Keep commits small and single-concern (e.g. docs, config/tooling, and feature code as separate commits) rather than bundling unrelated changes — split by what the change *is*, not just by when it happened to land.
 - For any non-trivial change (anything beyond a one-line doc fix): create a feature branch, commit there, push the branch, and open a PR into `main`. The CI workflow (`.github/workflows/ci.yml`, runs `npm run build` + `npm test`) runs on every PR and should be green before merging.
+- `main` is protected: direct pushes (including by admins) are rejected, and merging requires the `build-and-test` CI check to pass. There's no way around opening a PR — plan for the branch+PR step up front, not as an afterthought.
 - Never commit changes to `CLAUDE.md` or other agent-instruction files without the user reading the diff and explicitly confirming first, even if a broader "commit everything" request was already approved.
 
 ## Planning & Decision Records
