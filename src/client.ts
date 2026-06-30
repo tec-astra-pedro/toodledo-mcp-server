@@ -1,5 +1,15 @@
 import axios, { type AxiosInstance } from 'axios';
 import * as dotenv from 'dotenv';
+import type {
+  ToodledoTask,
+  ToodledoNote,
+  ToodledoList,
+  ToodledoFolder,
+  TaskCreateRequest,
+  NoteCreateRequest,
+  ListCreateRequest,
+  CommonResponse
+} from './types.js';
 
 dotenv.config();
 
@@ -30,26 +40,16 @@ export class ToodledoClient {
     });
   }
 
-  /**
-   * Ensures we have a valid access token.
-   * If not, it attempts to refresh the token using the refresh token.
-   */
   private async ensureAuthenticated(): Promise<void> {
     if (this.accessToken) return;
-
     if (!this.refreshToken) {
       throw new Error('No refresh token available. Manual authentication required.');
     }
-
     await this.refreshAccessToken();
   }
 
   private async refreshAccessToken(): Promise<void> {
-    console.error(`Refreshing Toodledo access token using refresh token...`);
-
-    // Basic Auth for OAuth2 exchange: Client ID and Secret encoded in Base64
     const authHeader = Buffer.from(`${this.credentials.clientId}:${this.credentials.clientSecret}`).toString('base64');
-
     try {
       const response = await axios.post<TokenResponse>(
         `${this.baseUrl}/account/token.php`,
@@ -64,23 +64,15 @@ export class ToodledoClient {
           },
         }
       );
-
       this.accessToken = response.data.access_token;
-      // Toodledo refresh tokens are single-use according to our research
       this.refreshToken = response.data.refresh_token;
-      console.error(`Token refreshed successfully. New access token: ${this.accessToken?.substring(0, 8)}...`);
     } catch (error: any) {
-      console.error('Failed to refresh Toodledo token:', error.response?.data || error.message);
-      throw new Error('Authentication failed.');
+      throw new Error(`Authentication failed: ${error.message}`);
     }
   }
 
-  /**
-   * A wrapper around axios that automatically handles authentication and retries on 401.
-   */
   private async request<T>(config: any): Promise<T> {
     await this.ensureAuthenticated();
-
     try {
       const response = await this.client.request<T>({
         ...config,
@@ -92,33 +84,128 @@ export class ToodledoClient {
       return response.data;
     } catch (error: any) {
       if (error.response?.status === 401 && this.refreshToken) {
-        console.error('Access token expired. Attempting one-time refresh...');
         await this.refreshAccessToken();
-        // Retry the request once with the new token
-        const retryResponse = await this.client.request<T>({
+        return this.client.request<T>({
           ...config,
           headers: {
             ...config.headers,
             Authorization: `Bearer ${this.accessToken}`,
           },
         });
-        return retryResponse.data;
       }
       throw error;
     }
   }
 
-  // --- API Methods (To be implemented) ---
-
-  async getTasks() {
-    return this.request<any>({ method: 'GET', url: '/tasks/get.php' });
+  async getTasks(params?: any): Promise<ToodledoTask[]> {
+    return this.request<ToodledoTask[]>({ method: 'GET', url: '/tasks/get.php', params });
   }
 
-  async addTask(title: string) {
-    return this.request<any>({
+  async addTask(data: TaskCreateRequest): Promise<ToodledoTask> {
+    return this.request<ToodledoTask>({
       method: 'POST',
       url: '/tasks/add.php',
-      data: new URLSearchParams({ title }),
+      data: new URLSearchParams({ ...data, task_id: '0' } as any),
+    });
+  }
+
+  async editTask(id: number, data: Partial<TaskCreateRequest>): Promise<ToodledoTask> {
+    return this.request<ToodledoTask>({
+      method: 'POST',
+      url: '/tasks/edit.php',
+      data: new URLSearchParams({ ...data, id: id.toString() } as any),
+    });
+  }
+
+  async deleteTask(ids: number[]): Promise<any> {
+    return this.request<any>({
+      method: 'POST',
+      url: '/tasks/delete.php',
+      data: new URLSearchParams({ ids: ids.join(',') } as any),
+    });
+  }
+
+  async getNotes(params?: any): Promise<ToodledoNote[]> {
+    return this.request<ToodledoNote[]>({ method: 'GET', url: '/notes/get.php', params });
+  }
+
+  async addNote(data: NoteCreateRequest): Promise<ToodledoNote[]> {
+    return this.request<ToodledoNote[]>({
+      method: 'POST',
+      url: '/notes/add.php',
+      data: new URLSearchParams({ notes: JSON.stringify(data.notes) } as any),
+    });
+  }
+
+  async editNote(id: number, data: Partial<ToodledoNote>): Promise<ToodledoNote[]> {
+    return this.request<ToodledoNote[]>({
+      method: 'POST',
+      url: '/notes/edit.php',
+      data: new URLSearchParams({ id: id.toString(), ...data as any } as any),
+    });
+  }
+
+  async deleteNote(id: number): Promise<any> {
+    return this.request<any>({
+      method: 'POST',
+      url: '/notes/delete.php',
+      data: new URLSearchParams({ notes: JSON.stringify([id]) } as any),
+    });
+  }
+
+  async getLists(params?: any): Promise<ToodledoList[]> {
+    return this.request<ToodledoList[]>({ method: 'GET', url: '/lists/get.php', params });
+  }
+
+  async addList(data: ListCreateRequest): Promise<ToodledoList> {
+    return this.request<ToodledoList>({
+      method: 'POST',
+      url: '/lists/add.php',
+      data: new URLSearchParams(data as any),
+    });
+  }
+
+  async editList(id: number, data: Partial<ToodledoList>): Promise<ToodledoList> {
+    return this.request<ToodledoList>({
+      method: 'POST',
+      url: '/lists/edit.php',
+      data: new URLSearchParams({ id: id.toString(), ...data as any } as any),
+    });
+  }
+
+  async deleteList(id: number): Promise<any> {
+    return this.request<any>({
+      method: 'POST',
+      url: '/lists/delete.php',
+      data: new URLSearchParams({ id: id.toString() } as any),
+    });
+  }
+
+  async getFolders(params?: any): Promise<ToodledoFolder[]> {
+    return this.request<ToodledoFolder[]>({ method: 'GET', url: '/folders/get.php', params });
+  }
+
+  async addFolder(title: string, description?: string): Promise<ToodledoFolder> {
+    return this.request<ToodledoFolder>({
+      method: 'POST',
+      url: '/folders/add.php',
+      data: new URLSearchParams({ title, description } as any),
+    });
+  }
+
+  async editFolder(id: number, data: Partial<ToodledoFolder>): Promise<ToodledoFolder> {
+    return this.request<ToodledoFolder>({
+      method: 'POST',
+      url: '/folders/edit.php',
+      data: new URLSearchParams({ id: id.toString(), ...data as any } as any),
+    });
+  }
+
+  async deleteFolder(id: number): Promise<any> {
+    return this.request<any>({
+      method: 'POST',
+      url: '/folders/delete.php',
+      data: new URLSearchParams({ id: id.toString() } as any),
     });
   }
 }
