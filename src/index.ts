@@ -662,7 +662,7 @@ export async function createServer(client: ToodledoClient): Promise<Server> {
   return server;
 }
 
-async function main() {
+export async function main() {
   const clientId = process.env.TOODLEDO_CLIENT_ID;
   const clientSecret = process.env.TOODLEDO_CLIENT_SECRET;
   const refreshToken = process.env.TOODLEDO_REFRESH_TOKEN;
