@@ -7,7 +7,7 @@
   "scripts": {
     "build": "rimraf build && tsc",
     "start": "node build/index.js",
-    "dev": "ts-node src/index.ts",
+    "dev": "node --loader ts-node/esm src/index.ts",
     "test": "vitest",
     "test:coverage": "vitest run --coverage"
   },
