@@ -12,22 +12,7 @@ dotenv.config();
 /**
  * Toodledo MCP Server
  */
-async function main() {
-  const clientId = process.env.TOODLEDO_CLIENT_ID;
-  const clientSecret = process.env.TOODLEDO_CLIENT_SECRET;
-  const refreshToken = process.env.TOODLEDO_REFRESH_TOKEN;
-
-  if (!clientId || !clientSecret) {
-    console.error("Error: TOODLEDO_CLIENT_ID and TOODLEDO_CLIENT_SECRET must be set in environment variables.");
-    process.exit(1);
-  }
-
-  const client = new ToodledoClient({
-    clientId,
-    clientSecret,
-    refreshToken,
-  });
-
+export async function createServer(client: ToodledoClient): Promise<Server> {
   const server = new Server(
     {
       name: "toodledo-mcp-server",
@@ -50,6 +35,13 @@ async function main() {
           type: "object",
           properties: {},
         },
+        title: "Ping",
+        annotations: {
+          readOnlyHint: true,
+          idempotentHint: true,
+          destructiveHint: false,
+          openWorldHint: false,
+        },
       },
       // --- Tasks ---
       {
@@ -60,6 +52,20 @@ async function main() {
           properties: {
             params: { type: "object", description: "Filtering parameters for the task list" }
           },
+        },
+        title: "Get Tasks",
+        outputSchema: {
+          type: "object",
+          properties: {
+            result: { type: "array", items: { type: "object", additionalProperties: true } }
+          },
+          required: ["result"],
+        },
+        annotations: {
+          readOnlyHint: true,
+          idempotentHint: true,
+          destructiveHint: false,
+          openWorldHint: false,
         },
       },
       {
@@ -74,6 +80,20 @@ async function main() {
             description: { type: "string", description: "The description/content of the task" }
           },
           required: ["title"],
+        },
+        title: "Add Task",
+        outputSchema: {
+          type: "object",
+          properties: {
+            result: { type: "object", additionalProperties: true }
+          },
+          required: ["result"],
+        },
+        annotations: {
+          readOnlyHint: false,
+          idempotentHint: false,
+          destructiveHint: true,
+          openWorldHint: false,
         },
       },
       {
@@ -90,16 +110,40 @@ async function main() {
           },
           required: ["id"],
         },
+        title: "Edit Task",
+        outputSchema: {
+          type: "object",
+          properties: {
+            result: { type: "object", additionalProperties: true }
+          },
+          required: ["result"],
+        },
+        annotations: {
+          readOnlyHint: false,
+          idempotentHint: false,
+          destructiveHint: true,
+          openWorldHint: false,
+        },
       },
       {
         name: "delete_task",
         description: "Delete one or more tasks",
-        inputSchema: {
+        inputSchema:
+        {
           type: "object",
-          properties: {
+          properties:
+          {
             ids: { type: "array", items: { type: "number" }, description: "Array of task IDs to delete" },
           },
           required: ["ids"],
+        },
+        title: "Delete Tasks",
+        annotations:
+        {
+          readOnlyHint: false,
+          idempotentHint: true,
+          destructiveHint: true,
+          openWorldHint: false,
         },
       },
       // --- Notes ---
@@ -112,13 +156,31 @@ async function main() {
             params: { type: "object", description: "Filtering parameters for notes" }
           },
         },
+        title: "Get Notes",
+        outputSchema:
+        {
+          type: "object",
+          properties: {
+            result: { type: "array", items: { type: "object", additionalProperties: true } }
+          },
+          required: ["result"],
+        },
+        annotations:
+          {
+          readOnlyHint: true,
+          idempotentHint: true,
+          destructiveHint: false,
+          openWorldHint: false,
+        },
       },
       {
         name: "add_note",
         description: "Add a note to Toodledo",
-        inputSchema: {
+        inputSchema:
+        {
           type: "object",
-          properties: {
+          properties:
+            {
             notes: {
               type: "array",
               description: "An array of note objects",
@@ -134,122 +196,296 @@ async function main() {
           },
           required: ["notes"],
         },
+        title: "Add Note",
+        outputSchema:
+        {
+          type: "object",
+          properties: {
+            result: { type: "array", items: { type: "object", additionalProperties: true } }
+          },
+          required: ["result"],
+        },
+        annotations:
+          {
+          readOnlyHint: false,
+          idempotentHint: false,
+          destructiveHint: true,
+          openWorldHint: false,
+        },
       },
       {
         name: "edit_note",
         description: "Update an existing note",
-        inputSchema: {
+        inputSchema:
+        {
           type: "object",
-          properties: {
+          properties:
+            {
             id: { type: "number", description: "The ID of the note to update" },
             content: { type: "string" },
           },
           required: ["id"],
         },
+        title: "Edit Note",
+        outputSchema:
+        {
+          type: "object",
+          properties: {
+            result: { type: "array", items: { type: "object", additionalProperties: true } }
+          },
+          required: ["result"],
+        },
+        annotations:
+          {
+          readOnlyHint: false,
+          idempotentHint: false,
+          destructiveHint: true,
+          openWorldHint: false,
+        },
       },
       {
         name: "delete_note",
         description: "Delete one or more notes",
-        inputSchema: {
+        inputSchema:
+        {
           type: "object",
-          properties: {
+          properties:
+          {
             ids: { type: "array", items: { type: "number" }, description: "Array of note IDs to delete" },
           },
           required: ["ids"],
         },
+        title: "Delete Notes",
+        annotations:
+          {
+          readOnlyHint: false,
+          idempotentHint: true,
+          destructiveHint: true,
+          openWorldHint: false,
+        },
       },
-      // --- Lists ---
+      // --- List Tools ---
       {
         name: "get_lists",
         description: "Retrieve a list of lists from Toodledo",
-        inputSchema: {
+        inputSchema:
+        {
           type: "object",
-          properties: {
+          properties:
+          {
             params: { type: "object", description: "Filtering parameters for lists" }
           },
+        },
+        title: "Get Lists",
+        outputSchema:
+        {
+          type: "object",
+          properties:
+            {
+            result: { type: "array", items: { type: "object", additionalProperties: true } }
+          },
+          required: ["result"],
+        },
+        annotations:
+          {
+          readOnlyHint: true,
+          idempotentHint: true,
+          destructiveHint: false,
+          openWorldHint: false,
         },
       },
       {
         name: "add_list",
         description: "Create a new list in Toodledo",
-        inputSchema: {
+        inputSchema:
+        {
           type: "object",
-          properties: {
+          properties:
+          {
             title: { type: "string" },
             ref: { type: "string" },
           },
           required: ["title"],
         },
+        title: "Add List",
+        outputSchema:
+        {
+          type: "object",
+          properties:
+            {
+            result: { type: "object", additionalProperties: true }
+          },
+          required: ["result"],
+        },
+        annotations:
+          {
+          readOnlyHint: false,
+          idempotentHint: false,
+          destructiveHint: true,
+          openWorldHint: false,
+        },
       },
       {
         name: "edit_list",
         description: "Update an existing list",
-        inputSchema: {
+        inputSchema:
+        {
           type: "object",
-          properties: {
+          properties:
+          {
             id: { type: "number" },
             title: { type: "string" },
             ref: { type: "string" },
           },
           required: ["id"],
         },
+        title: "Edit List",
+        outputSchema:
+        {
+          type: "object",
+          properties:
+            {
+            result: { type: "object", additionalProperties: true }
+          },
+          required: ["result"],
+        },
+        annotations:
+        {
+          readOnlyHint: false,
+          idempotentHint: false,
+          destructiveHint: true,
+          openWorldHint: false,
+        },
       },
       {
         name: "delete_list",
         description: "Delete one or more lists",
-        inputSchema: {
+        inputSchema:
+        {
           type: "object",
-          properties: {
+          properties:
+          {
             ids: { type: "array", items: { type: "number" }, description: "Array of list IDs to delete" },
           },
           required: ["ids"],
         },
+        title: "Delete Lists",
+        annotations:
+        {
+          readOnlyHint: false,
+          idempotentHint: true,
+          destructiveHint: true,
+          openWorldHint: false,
+        },
       },
-      // --- Folders ---
+      // --- Folder Tools ---
       {
         name: "get_folders",
         description: "Retrieve a list of folders from Toodledo",
-        inputSchema: {
+        inputSchema:
+        {
           type: "object",
-          properties: {
+          properties:
+          {
             params: { type: "object", description: "Filtering parameters for folders" }
           },
+        },
+        title: "Get Folders",
+        outputSchema:
+        {
+          type: "object",
+          properties:
+            {
+            result: { type: "array", items: { type: "object", additionalProperties: true } }
+          },
+          required: ["result"],
+        },
+        annotations:
+          {
+          readOnlyHint: true,
+          idempotentHint: true,
+          destructiveHint: false,
+          openWorldHint: false,
         },
       },
       {
         name: "add_folder",
         description: "Create a new folder in Toodledo",
-        inputSchema: {
+        inputSchema:
+        {
           type: "object",
-          properties: {
+          properties:
+            {
             title: { type: "string" },
             description: { type: "string" }
           },
           required: ["title"],
         },
+        title: "Add Folder",
+        outputSchema:
+        {
+          type: "object",
+          properties: {
+            result: { type: "object", additionalProperties: true }
+          },
+          required: ["result"],
+        },
+        annotations:
+          {
+          readOnlyHint: false,
+          idempotentHint: false,
+          destructiveHint: true,
+          openWorldHint: false,
+        },
       },
       {
         name: "edit_folder",
         description: "Update an existing folder",
-        inputSchema: {
+        inputSchema:
+        {
           type: "object",
-          properties: {
+          properties:
+            {
             id: { type: "number" },
             title: { type: "string" },
             description: { type: "string" },
           },
           required: ["id"],
         },
+        title: "Edit Folder",
+        outputSchema:
+        {
+          type: "object",
+          properties: {
+            result: { type: "object", additionalProperties: true }
+          },
+          required: ["result"],
+        },
+        annotations:
+          {
+          readOnlyHint: false,
+          idempotentHint: false,
+          destructiveHint: true,
+          openWorldHint: false,
+        },
       },
       {
         name: "delete_folder",
         description: "Delete one or more folders",
-        inputSchema: {
+        inputSchema:
+        {
           type: "object",
           properties: {
-            ids: { type: "array", items: { type: "number" }, description: "Array of folder IDs to delete" },
+            ids: { type: "number" },
           },
           required: ["ids"],
+        },
+        title: "Delete Folders",
+        annotations: {
+          readOnlyHint: false,
+          idempotentHint: true,
+          destructiveHint: true,
+          openWorldHint: false,
         },
       },
     ],
@@ -270,7 +506,8 @@ async function main() {
         case "get_tasks": {
           const tasks = await client.getTasks(args);
           return {
-            content: [{ type: "text", text: JSON.stringify(tasks, null, 2) }],
+            content: [{ type: "text", text: JSON.stringify({ result: tasks }, null, 2) }],
+            structuredContent: { result: tasks },
           };
         }
 
@@ -282,7 +519,8 @@ async function main() {
             description: args.description
           });
           return {
-            content: [{ type: "text", text: JSON.stringify(task, null, 2) }],
+            content: [{ type: "text", text: JSON.stringify({ result: task }, null, 2) }],
+            structuredContent: { result: task },
           };
         }
 
@@ -290,7 +528,8 @@ async function main() {
           const { id, ...data } = args;
           const task = await client.editTask(Number(id), data);
           return {
-            content: [{ type: "text", text: JSON.stringify(task, null, 2) }],
+            content: [{ type: "text", text: JSON.stringify({ result: task }, null, 2) }],
+            structuredContent: { result: task },
           };
         }
 
@@ -306,14 +545,16 @@ async function main() {
         case "get_notes": {
           const notes = await client.getNotes(args);
           return {
-            content: [{ type: "text", text: JSON.stringify(notes, null, 2) }],
+            content: [{ type: "text", text: JSON.stringify({ result: notes }, null, 2) }],
+            structuredContent: { result: notes },
           };
         }
 
         case "add_note": {
-          const task = await client.addNote(args);
+          const notes = await client.addNote(args);
           return {
-            content: [{ type: "text", text: JSON.stringify(task, null, 2) }],
+            content: [{ type: "text", text: JSON.stringify({ result: notes }, null, 2) }],
+            structuredContent: { result: notes },
           };
         }
 
@@ -321,7 +562,8 @@ async function main() {
           const { id, ...data } = args;
           const notes = await client.editNote(Number(id), data);
           return {
-            content: [{ type: "text", text: JSON.stringify(notes, null, 2) }],
+            content: [{ type: "text", text: JSON.stringify({ result: notes }, null, 2) }],
+            structuredContent: { result: notes },
           };
         }
 
@@ -337,14 +579,16 @@ async function main() {
         case "get_lists": {
           const lists = await client.getLists(args);
           return {
-            content: [{ type: "text", text: JSON.stringify(lists, null, 2) }],
+            content: [{ type: "text", text: JSON.stringify({ result: lists }, null, 2) }],
+            structuredContent: { result: lists },
           };
         }
 
         case "add_list": {
           const list = await client.addList(args);
           return {
-            content: [{ type: "text", text: JSON.stringify(list, null, 2) }],
+            content: [{ type: "text", text: JSON.stringify({ result: list }, null, 2) }],
+            structuredContent: { result: list },
           };
         }
 
@@ -352,7 +596,8 @@ async function main() {
           const { id, ...data } = args;
           const list = await client.editList(Number(id), data);
           return {
-            content: [{ type: "text", text: JSON.stringify(list, null, 2) }],
+            content: [{ type: "text", text: JSON.stringify({ result: list }, null, 2) }],
+            structuredContent: { result: list },
           };
         }
 
@@ -368,31 +613,34 @@ async function main() {
         case "get_folders": {
           const folders = await client.getFolders(args);
           return {
-            content: [{ type: "text", text: JSON.stringify(folders, null, 2) }],
+            content: [{ type: "text", text: JSON.stringify({ result: folders }, null, 2) }],
+            structuredContent: { result: folders },
           };
         }
 
         case "add_folder": {
           const folder = await client.addFolder(args.title, args.description);
           return {
-            content: [{ type: "text", text: JSON.stringify(folder) }],
-          }
+            content: [{ type: "text", text: JSON.stringify({ result: folder }, null, 2) }],
+            structuredContent: { result: folder },
+          };
         }
 
         case "edit_folder": {
           const { id, ...data } = args;
           const folder = await client.editFolder(Number(id), data);
           return {
-            content: [{ type: "text", text: JSON.stringify(folder) }],
-          }
+            content: [{ type: "text", text: JSON.stringify({ result: folder }, null, 2) }],
+            structuredContent: { result: folder },
+          };
         }
 
         case "delete_folder": {
           const { ids } = args;
           await client.deleteFolder(ids[0]);
           return {
-            content: [{ type: "text", text: `Successfully deleted folder: ${ids[0]}` }],
-          }
+            content: [{ type: "text", text: `Successfully deleted folder: ${ids.join(', ')}` }],
+          };
         }
 
         default:
@@ -411,12 +659,34 @@ async function main() {
     }
   });
 
+  return server;
+}
+
+async function main() {
+  const clientId = process.env.TOODLEDO_CLIENT_ID;
+  const clientSecret = process.env.TOODLEDO_CLIENT_SECRET;
+  const refreshToken = process.env.TOODLEDO_REFRESH_TOKEN;
+
+  if (!clientId || !clientSecret) {
+    console.error("Error: TOODLEDO_CLIENT_ID and TOODLEDO_CLIENT_SECRET must be set in environment variables.");
+    process.exit(1);
+  }
+
+  const client = new ToodledoClient({
+    clientId,
+    clientSecret,
+    refreshToken,
+  });
+
+  const server = await createServer(client);
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error("Toodledo MCP Server running on stdio");
 }
 
-main().catch((error) => {
-  console.error("Fatal error in main():", error);
-  process.exit(1);
-});
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main().catch((error) => {
+    console.error("Fatal error in main():", error);
+    process.exit(1);
+  });
+}
