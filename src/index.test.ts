@@ -48,6 +48,10 @@ describe('Toodledo MCP Server', () => {
     await client.connect(clientTransport);
   });
 
+  async function callTool(name: string, args: Record<string, any> = {}): Promise<any> {
+    return client.callTool({ name, arguments: args }, CallToolResultSchema);
+  }
+
   describe('get_tasks', () => {
     it('returns structured result and content matching the payload', async () => {
       const mockTasks = [
@@ -129,6 +133,207 @@ describe('Toodledo MCP Server', () => {
       expect(response.content[0].type).toBe('text');
       expect(JSON.parse(response.content[0].text as string)).toEqual({ result: mockNotes });
       expect(response.structuredContent?.result).toEqual(mockNotes);
+    });
+  });
+
+  describe('tools/list', () => {
+    it('lists all 17 tools with the expected shapes', async () => {
+      const { tools } = await client.listTools();
+
+      expect(tools).toHaveLength(17);
+
+      const getTasks = tools.find((t) => t.name === 'get_tasks');
+      expect(getTasks?.outputSchema).toBeDefined();
+      expect(getTasks?.annotations).toEqual({
+        readOnlyHint: true,
+        idempotentHint: true,
+        destructiveHint: false,
+        openWorldHint: false,
+      });
+
+      const deleteTask = tools.find((t) => t.name === 'delete_task');
+      expect(deleteTask?.outputSchema).toBeUndefined();
+
+      const ping = tools.find((t) => t.name === 'ping');
+      expect(ping?.outputSchema).toBeUndefined();
+    });
+  });
+
+  describe('ping', () => {
+    it('returns a plain-text pong with no structured content', async () => {
+      const response = await callTool('ping');
+
+      expect(response.content[0].type).toBe('text');
+      expect(response.content[0].text).toBe('Pong! Toodledo MCP server is running.');
+      expect(response.structuredContent).toBeUndefined();
+    });
+  });
+
+  describe('edit_task', () => {
+    it('returns structured result and content matching the payload', async () => {
+      const updatedTask = { id: 1, title: 'Updated Task' };
+      vi.mocked(mockClient.editTask).mockResolvedValue(updatedTask as any);
+
+      const response = await callTool('edit_task', { id: 1, title: 'Updated Task' });
+
+      expect(mockClient.editTask).toHaveBeenCalledWith(1, { title: 'Updated Task' });
+      expect(JSON.parse(response.content[0].text as string)).toEqual({ result: updatedTask });
+      expect(response.structuredContent?.result).toEqual(updatedTask);
+    });
+  });
+
+  describe('delete_task', () => {
+    it('deletes tasks and returns a plain-text confirmation', async () => {
+      vi.mocked(mockClient.deleteTask).mockResolvedValue(undefined as any);
+
+      const response = await callTool('delete_task', { ids: [1, 2] });
+
+      expect(mockClient.deleteTask).toHaveBeenCalledWith([1, 2]);
+      expect(response.content[0].text).toBe('Successfully deleted tasks: 1, 2');
+      expect(response.structuredContent).toBeUndefined();
+    });
+  });
+
+  describe('edit_note', () => {
+    it('returns structured result and content matching the payload (array)', async () => {
+      const updatedNotes = [{ id: 20, content: 'Updated Note' }];
+      vi.mocked(mockClient.editNote).mockResolvedValue(updatedNotes as any);
+
+      const response = await callTool('edit_note', { id: 20, content: 'Updated Note' });
+
+      expect(mockClient.editNote).toHaveBeenCalledWith(20, { content: 'Updated Note' });
+      expect(JSON.parse(response.content[0].text as string)).toEqual({ result: updatedNotes });
+      expect(response.structuredContent?.result).toEqual(updatedNotes);
+    });
+  });
+
+  describe('delete_note', () => {
+    it('deletes a note and returns a plain-text confirmation', async () => {
+      vi.mocked(mockClient.deleteNote).mockResolvedValue(undefined as any);
+
+      const response = await callTool('delete_note', { ids: [5] });
+
+      expect(mockClient.deleteNote).toHaveBeenCalledWith(5);
+      expect(response.content[0].text).toBe('Successfully deleted note: 5');
+      expect(response.structuredContent).toBeUndefined();
+    });
+  });
+
+  describe('get_lists', () => {
+    it('returns structured result and content matching the payload', async () => {
+      const mockLists = [{ id: 1, title: 'List 1' }];
+      vi.mocked(mockClient.getLists).mockResolvedValue(mockLists as any);
+
+      const response = await callTool('get_lists');
+
+      expect(JSON.parse(response.content[0].text as string)).toEqual({ result: mockLists });
+      expect(response.structuredContent?.result).toEqual(mockLists);
+    });
+  });
+
+  describe('add_list', () => {
+    it('returns structured result and content matching the payload', async () => {
+      const newList = { id: 2, title: 'New List' };
+      vi.mocked(mockClient.addList).mockResolvedValue(newList as any);
+
+      const response = await callTool('add_list', { title: 'New List' });
+
+      expect(JSON.parse(response.content[0].text as string)).toEqual({ result: newList });
+      expect(response.structuredContent?.result).toEqual(newList);
+    });
+  });
+
+  describe('edit_list', () => {
+    it('returns structured result and content matching the payload', async () => {
+      const updatedList = { id: 2, title: 'Updated List' };
+      vi.mocked(mockClient.editList).mockResolvedValue(updatedList as any);
+
+      const response = await callTool('edit_list', { id: 2, title: 'Updated List' });
+
+      expect(mockClient.editList).toHaveBeenCalledWith(2, { title: 'Updated List' });
+      expect(JSON.parse(response.content[0].text as string)).toEqual({ result: updatedList });
+      expect(response.structuredContent?.result).toEqual(updatedList);
+    });
+  });
+
+  describe('delete_list', () => {
+    it('deletes a list and returns a plain-text confirmation', async () => {
+      vi.mocked(mockClient.deleteList).mockResolvedValue(undefined as any);
+
+      const response = await callTool('delete_list', { ids: [7] });
+
+      expect(mockClient.deleteList).toHaveBeenCalledWith(7);
+      expect(response.content[0].text).toBe('Successfully deleted list: 7');
+      expect(response.structuredContent).toBeUndefined();
+    });
+  });
+
+  describe('get_folders', () => {
+    it('returns structured result and content matching the payload', async () => {
+      const mockFolders = [{ id: 1, name: 'Folder 1' }];
+      vi.mocked(mockClient.getFolders).mockResolvedValue(mockFolders as any);
+
+      const response = await callTool('get_folders');
+
+      expect(JSON.parse(response.content[0].text as string)).toEqual({ result: mockFolders });
+      expect(response.structuredContent?.result).toEqual(mockFolders);
+    });
+  });
+
+  describe('add_folder', () => {
+    it('returns structured result and content matching the payload', async () => {
+      const newFolder = { id: 2, name: 'New Folder' };
+      vi.mocked(mockClient.addFolder).mockResolvedValue(newFolder as any);
+
+      const response = await callTool('add_folder', { title: 'New Folder', description: 'desc' });
+
+      expect(mockClient.addFolder).toHaveBeenCalledWith('New Folder', 'desc');
+      expect(JSON.parse(response.content[0].text as string)).toEqual({ result: newFolder });
+      expect(response.structuredContent?.result).toEqual(newFolder);
+    });
+  });
+
+  describe('edit_folder', () => {
+    it('returns structured result and content matching the payload', async () => {
+      const updatedFolder = { id: 2, name: 'Updated Folder' };
+      vi.mocked(mockClient.editFolder).mockResolvedValue(updatedFolder as any);
+
+      const response = await callTool('edit_folder', { id: 2, title: 'Updated Folder' });
+
+      expect(mockClient.editFolder).toHaveBeenCalledWith(2, { title: 'Updated Folder' });
+      expect(JSON.parse(response.content[0].text as string)).toEqual({ result: updatedFolder });
+      expect(response.structuredContent?.result).toEqual(updatedFolder);
+    });
+  });
+
+  describe('delete_folder', () => {
+    it('deletes a folder and returns a plain-text confirmation', async () => {
+      vi.mocked(mockClient.deleteFolder).mockResolvedValue(undefined as any);
+
+      const response = await callTool('delete_folder', { ids: [9] });
+
+      expect(mockClient.deleteFolder).toHaveBeenCalledWith(9);
+      expect(response.content[0].text).toBe('Successfully deleted folder: 9');
+      expect(response.structuredContent).toBeUndefined();
+    });
+  });
+
+  describe('error handling', () => {
+    it('returns isError with the error message when a client call rejects', async () => {
+      vi.mocked(mockClient.getTasks).mockRejectedValue(new Error('boom'));
+
+      const response = await callTool('get_tasks');
+
+      expect(response.isError).toBe(true);
+      expect(response.content[0].text).toBe('boom');
+      expect(response.structuredContent).toBeUndefined();
+    });
+
+    it('returns isError for an unknown tool name', async () => {
+      const response = await callTool('not_a_real_tool');
+
+      expect(response.isError).toBe(true);
+      expect(response.content[0].text).toBe('Tool not found: not_a_real_tool');
     });
   });
 });
