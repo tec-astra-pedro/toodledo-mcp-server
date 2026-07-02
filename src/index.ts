@@ -510,7 +510,7 @@ export async function createServer(client: ToodledoClient): Promise<Server> {
 
         // --- Task Tools ---
         case "get_tasks": {
-          const tasks = await client.getTasks(args);
+          const tasks = await client.getTasks(args?.params);
           return {
             content: [{ type: "text", text: JSON.stringify({ result: tasks }, null, 2) }],
             structuredContent: { result: tasks },
@@ -549,7 +549,7 @@ export async function createServer(client: ToodledoClient): Promise<Server> {
 
         // --- Note Tools ---
         case "get_notes": {
-          const notes = await client.getNotes(args);
+          const notes = await client.getNotes(args?.params);
           return {
             content: [{ type: "text", text: JSON.stringify({ result: notes }, null, 2) }],
             structuredContent: { result: notes },
@@ -583,7 +583,7 @@ export async function createServer(client: ToodledoClient): Promise<Server> {
 
         // --- List Tools ---
         case "get_lists": {
-          const lists = await client.getLists(args);
+          const lists = await client.getLists(args?.params);
           return {
             content: [{ type: "text", text: JSON.stringify({ result: lists }, null, 2) }],
             structuredContent: { result: lists },
@@ -617,7 +617,7 @@ export async function createServer(client: ToodledoClient): Promise<Server> {
 
         // --- Folder Tools ---
         case "get_folders": {
-          const folders = await client.getFolders(args);
+          const folders = await client.getFolders(args?.params);
           return {
             content: [{ type: "text", text: JSON.stringify({ result: folders }, null, 2) }],
             structuredContent: { result: folders },

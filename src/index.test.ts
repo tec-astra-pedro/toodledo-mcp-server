@@ -72,6 +72,25 @@ describe('Toodledo MCP Server', () => {
       expect(JSON.parse(response.content[0].text as string)).toEqual({ result: mockTasks });
       expect(response.structuredContent?.result).toEqual(mockTasks);
     });
+
+    it('forwards the inner params object to the client, not the whole arguments wrapper', async () => {
+      vi.mocked(mockClient.getTasks).mockResolvedValue([]);
+      vi.mocked(mockClient.getNotes).mockResolvedValue([]);
+      vi.mocked(mockClient.getLists).mockResolvedValue([]);
+      vi.mocked(mockClient.getFolders).mockResolvedValue([]);
+
+      await callTool('get_tasks', { params: { comp: 0 } });
+      expect(mockClient.getTasks).toHaveBeenCalledWith({ comp: 0 });
+
+      await callTool('get_notes', { params: { before: 123 } });
+      expect(mockClient.getNotes).toHaveBeenCalledWith({ before: 123 });
+
+      await callTool('get_lists', { params: { after: 456 } });
+      expect(mockClient.getLists).toHaveBeenCalledWith({ after: 456 });
+
+      await callTool('get_folders', { params: { id: 7 } });
+      expect(mockClient.getFolders).toHaveBeenCalledWith({ id: 7 });
+    });
   });
 
   describe('add_task', () => {
