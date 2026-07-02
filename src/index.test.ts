@@ -214,8 +214,20 @@ describe('Toodledo MCP Server', () => {
       const response = await callTool('delete_note', { ids: [5] });
 
       expect(mockClient.deleteNote).toHaveBeenCalledWith(5);
-      expect(response.content[0].text).toBe('Successfully deleted note: 5');
+      expect(response.content[0].text).toBe('Successfully deleted 1 note(s): 5');
       expect(response.structuredContent).toBeUndefined();
+    });
+
+    it('deletes multiple notes', async () => {
+      vi.mocked(mockClient.deleteNote).mockResolvedValue(undefined as any);
+
+      const response = await callTool('delete_note', { ids: [1, 2, 3] });
+
+      expect(mockClient.deleteNote).toHaveBeenCalledTimes(3);
+      expect(mockClient.deleteNote).toHaveBeenCalledWith(1);
+      expect(mockClient.deleteNote).toHaveBeenCalledWith(2);
+      expect(mockClient.deleteNote).toHaveBeenCalledWith(3);
+      expect(response.content[0].text).toBe('Successfully deleted 3 note(s): 1, 2, 3');
     });
   });
 
@@ -263,8 +275,20 @@ describe('Toodledo MCP Server', () => {
       const response = await callTool('delete_list', { ids: [7] });
 
       expect(mockClient.deleteList).toHaveBeenCalledWith(7);
-      expect(response.content[0].text).toBe('Successfully deleted list: 7');
+      expect(response.content[0].text).toBe('Successfully deleted 1 list(s): 7');
       expect(response.structuredContent).toBeUndefined();
+    });
+
+    it('deletes multiple lists', async () => {
+      vi.mocked(mockClient.deleteList).mockResolvedValue(undefined as any);
+
+      const response = await callTool('delete_list', { ids: [1, 2, 3] });
+
+      expect(mockClient.deleteList).toHaveBeenCalledTimes(3);
+      expect(mockClient.deleteList).toHaveBeenCalledWith(1);
+      expect(mockClient.deleteList).toHaveBeenCalledWith(2);
+      expect(mockClient.deleteList).toHaveBeenCalledWith(3);
+      expect(response.content[0].text).toBe('Successfully deleted 3 list(s): 1, 2, 3');
     });
   });
 
@@ -313,8 +337,20 @@ describe('Toodledo MCP Server', () => {
       const response = await callTool('delete_folder', { ids: [9] });
 
       expect(mockClient.deleteFolder).toHaveBeenCalledWith(9);
-      expect(response.content[0].text).toBe('Successfully deleted folder: 9');
+      expect(response.content[0].text).toBe('Successfully deleted 1 folder(s): 9');
       expect(response.structuredContent).toBeUndefined();
+    });
+
+    it('deletes multiple folders', async () => {
+      vi.mocked(mockClient.deleteFolder).mockResolvedValue(undefined as any);
+
+      const response = await callTool('delete_folder', { ids: [1, 2, 3] });
+
+      expect(mockClient.deleteFolder).toHaveBeenCalledTimes(3);
+      expect(mockClient.deleteFolder).toHaveBeenCalledWith(1);
+      expect(mockClient.deleteFolder).toHaveBeenCalledWith(2);
+      expect(mockClient.deleteFolder).toHaveBeenCalledWith(3);
+      expect(response.content[0].text).toBe('Successfully deleted 3 folder(s): 1, 2, 3');
     });
   });
 

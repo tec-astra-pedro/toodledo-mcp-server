@@ -476,7 +476,11 @@ export async function createServer(client: ToodledoClient): Promise<Server> {
         {
           type: "object",
           properties: {
-            ids: { type: "number" },
+            ids: {
+              type: "array",
+              items: { type: "number" },
+              description: "Array of folder IDs to delete",
+            },
           },
           required: ["ids"],
         },
@@ -568,10 +572,10 @@ export async function createServer(client: ToodledoClient): Promise<Server> {
         }
 
         case "delete_note": {
-          const { ids } = args;
-          await client.deleteNote(ids[0]);
+          const ids = args.ids as number[];
+          await Promise.all(ids.map(id => client.deleteNote(Number(id))));
           return {
-            content: [{ type: "text", text: `Successfully deleted note: ${ids[0]}` }],
+            content: [{ type: "text", text: `Successfully deleted ${ids.length} note(s): ${ids.join(', ')}` }],
           };
         }
 
@@ -602,10 +606,10 @@ export async function createServer(client: ToodledoClient): Promise<Server> {
         }
 
         case "delete_list": {
-          const { ids } = args;
-          await client.deleteList(ids[0]);
+          const ids = args.ids as number[];
+          await Promise.all(ids.map(id => client.deleteList(Number(id))));
           return {
-            content: [{ type: "text", text: `Successfully deleted list: ${ids[0]}` }],
+            content: [{ type: "text", text: `Successfully deleted ${ids.length} list(s): ${ids.join(', ')}` }],
           };
         }
 
@@ -636,10 +640,10 @@ export async function createServer(client: ToodledoClient): Promise<Server> {
         }
 
         case "delete_folder": {
-          const { ids } = args;
-          await client.deleteFolder(ids[0]);
+          const ids = args.ids as number[];
+          await Promise.all(ids.map(id => client.deleteFolder(Number(id))));
           return {
-            content: [{ type: "text", text: `Successfully deleted folder: ${ids.join(', ')}` }],
+            content: [{ type: "text", text: `Successfully deleted ${ids.length} folder(s): ${ids.join(', ')}` }],
           };
         }
 
