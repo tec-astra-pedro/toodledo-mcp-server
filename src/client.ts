@@ -1,5 +1,8 @@
 import axios, { type AxiosInstance } from 'axios';
 import * as dotenv from 'dotenv';
+import type { TokenStore } from './tokenStore.js';
+import { createFileTokenStore } from './tokenStore.js';
+import { refreshToken as refreshAccessTokenHttp } from './oauth.js';
 import type {
   ToodledoTask,
   ToodledoNote,
@@ -31,10 +34,13 @@ export class ToodledoClient {
   private credentials: ToodledoCredentials;
   private accessToken: string | null = null;
   private refreshToken: string | null = null;
+  private tokenStore: TokenStore;
 
-  constructor(credentials: ToodledoCredentials) {
+  constructor(credentials: ToodledoCredentials, tokenStore?: TokenStore) {
     this.credentials = credentials;
-    this.refreshToken = credentials.refreshToken || null;
+    // Explicit credential takes precedence over the store on construction.
+    this.refreshToken = credentials.refreshToken ?? null;
+    this.tokenStore = tokenStore ?? createFileTokenStore();
     this.client = axios.create({
       baseURL: this.baseUrl,
     });
@@ -43,29 +49,27 @@ export class ToodledoClient {
   private async ensureAuthenticated(): Promise<void> {
     if (this.accessToken) return;
     if (!this.refreshToken) {
-      throw new Error('No refresh token available. Manual authentication required.');
+      // Fall back to the token store — may be populated from a prior session.
+      const stored = await this.tokenStore.read();
+      if (stored) {
+        this.refreshToken = stored;
+      } else {
+        throw new Error(
+          'No refresh token available. Run `npm run auth` to authorize this client, ' +
+            'or set TOODLEDO_REFRESH_TOKEN in the environment.'
+        );
+      }
     }
     await this.refreshAccessToken();
   }
 
   private async refreshAccessToken(): Promise<void> {
-    const authHeader = Buffer.from(`${this.credentials.clientId}:${this.credentials.clientSecret}`).toString('base64');
     try {
-      const response = await axios.post<TokenResponse>(
-        `${this.baseUrl}/account/token.php`,
-        new URLSearchParams({
-          grant_type: 'refresh_token',
-          refresh_token: this.refreshToken!,
-        }),
-        {
-          headers: {
-            Authorization: `Basic ${authHeader}`,
-            'Content-Type': 'application/x-www-form-urlencoded',
-          },
-        }
-      );
-      this.accessToken = response.data.access_token;
-      this.refreshToken = response.data.refresh_token;
+      const response = await refreshAccessTokenHttp(this.credentials, this.refreshToken!);
+      this.accessToken = response.access_token;
+      this.refreshToken = response.refresh_token;
+      // Persist the rotated refresh token so it survives process restarts.
+      this.tokenStore.write(response.refresh_token);
     } catch (error: any) {
       throw new Error(`Authentication failed: ${error.message}`);
     }

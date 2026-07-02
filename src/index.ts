@@ -669,6 +669,8 @@ export async function createServer(client: ToodledoClient): Promise<Server> {
 export async function main() {
   const clientId = process.env.TOODLEDO_CLIENT_ID;
   const clientSecret = process.env.TOODLEDO_CLIENT_SECRET;
+  // Refresh token is no longer required here — the client sources it from
+  // the token store (populated by `npm run auth`) if not provided directly.
   const refreshToken = process.env.TOODLEDO_REFRESH_TOKEN;
 
   if (!clientId || !clientSecret) {
