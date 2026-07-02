@@ -7,7 +7,9 @@ import {
 import * as dotenv from "dotenv";
 import { ToodledoClient } from "./client.js";
 
-dotenv.config();
+// quiet: dotenv v17 logs "injected env" to stdout by default, which corrupts
+// the stdio JSON-RPC transport
+dotenv.config({ quiet: true });
 
 /**
  * Toodledo MCP Server

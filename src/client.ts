@@ -14,7 +14,9 @@ import type {
   CommonResponse
 } from './types.js';
 
-dotenv.config();
+// quiet: dotenv v17 logs "injected env" to stdout by default, which corrupts
+// the stdio JSON-RPC transport
+dotenv.config({ quiet: true });
 
 export interface ToodledoCredentials {
   clientId: string;
