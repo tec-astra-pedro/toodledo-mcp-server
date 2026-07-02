@@ -66,13 +66,25 @@ export class ToodledoClient {
   }
 
   private async refreshAccessToken(): Promise<void> {
+    const attempted = this.refreshToken!;
     try {
-      const response = await refreshAccessTokenHttp(this.credentials, this.refreshToken!);
+      const response = await refreshAccessTokenHttp(this.credentials, attempted);
       this.accessToken = response.access_token;
       this.refreshToken = response.refresh_token;
       // Persist the rotated refresh token so it survives process restarts.
       this.tokenStore.write(response.refresh_token);
     } catch (error: any) {
+      // The in-memory token may be stale: another process (or a re-run of
+      // `npm run auth`) may have rotated it and persisted a newer one.
+      const stored = await this.tokenStore.read().catch(() => null);
+      if (stored && stored !== attempted) {
+        this.refreshToken = stored;
+        return this.refreshAccessToken();
+      }
+      // Drop the dead token so a later call re-reads the store instead of
+      // retrying a token that Toodledo has already invalidated.
+      this.accessToken = null;
+      this.refreshToken = null;
       throw new Error(`Authentication failed: ${error.message}`);
     }
   }

@@ -444,6 +444,83 @@ describe('ToodledoClient', () => {
     expect(writtenTokens).toEqual(['rotated_refresh']);
   });
 
+  it('should retry with the stored token when the in-memory token is stale', async () => {
+    // Simulates another process having rotated the token: the in-memory
+    // token is dead, but the store holds the newer, valid one.
+    const mockStore: TokenStore = {
+      read() { return Promise.resolve('newer_stored_token'); },
+      write(_t: string) {},
+    };
+
+    const attemptedTokens: string[] = [];
+    server.use(
+      http.post('https://api.toodledo.com/3/account/token.php', async ({ request }) => {
+        const body = Object.fromEntries(new URLSearchParams(await request.text()));
+        attemptedTokens.push(body.refresh_token);
+        if (body.refresh_token === 'stale_token') {
+          return new HttpResponse(null, { status: 400 });
+        }
+        return HttpResponse.json({
+          access_token: 'recovered_access',
+          refresh_token: 'rotated_again',
+          expires_in: 3600,
+        });
+      }),
+      http.get('https://api.toodledo.com/3/tasks/get.php', () => {
+        return HttpResponse.json([{ id: 1, title: 'Recovered' }]);
+      })
+    );
+
+    const client = new ToodledoClient(
+      { clientId: 'id', clientSecret: 'secret', refreshToken: 'stale_token' },
+      mockStore
+    );
+    const tasks = await client.getTasks();
+    expect(tasks[0].title).toBe('Recovered');
+    expect(attemptedTokens).toEqual(['stale_token', 'newer_stored_token']);
+  });
+
+  it('should drop a dead token on refresh failure so a later call can recover', async () => {
+    // First call: both the in-memory token and the store hold the same dead
+    // token, so authentication fails. The store is then updated (as if
+    // `npm run auth` re-ran), and a second call must recover without a
+    // process restart.
+    let storedToken = 'dead_token';
+    const mockStore: TokenStore = {
+      read() { return Promise.resolve(storedToken); },
+      write(t: string) { storedToken = t; },
+    };
+
+    server.use(
+      http.post('https://api.toodledo.com/3/account/token.php', async ({ request }) => {
+        const body = Object.fromEntries(new URLSearchParams(await request.text()));
+        if (body.refresh_token === 'dead_token') {
+          return new HttpResponse(null, { status: 400 });
+        }
+        return HttpResponse.json({
+          access_token: 'fresh_access',
+          refresh_token: 'fresh_rotated',
+          expires_in: 3600,
+        });
+      }),
+      http.get('https://api.toodledo.com/3/tasks/get.php', () => {
+        return HttpResponse.json([{ id: 1, title: 'After recovery' }]);
+      })
+    );
+
+    const client = new ToodledoClient(
+      { clientId: 'id', clientSecret: 'secret', refreshToken: 'dead_token' },
+      mockStore
+    );
+    await expect(client.getTasks()).rejects.toThrow(/Authentication failed/);
+
+    // The store is re-authorized out of band.
+    storedToken = 'fresh_token';
+    const tasks = await client.getTasks();
+    expect(tasks[0].title).toBe('After recovery');
+    expect(storedToken).toBe('fresh_rotated');
+  });
+
   it('should prefer explicit credential refresh token over the store on construction', async () => {
     const readCalls: string[] = [];
     const mockStore: TokenStore = {
