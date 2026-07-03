@@ -72,20 +72,42 @@ describe('Toodledo MCP Server', () => {
       expect(JSON.parse(response.content[0].text as string)).toEqual({ result: mockTasks });
       expect(response.structuredContent?.result).toEqual(mockTasks);
     });
+
+    it('forwards the inner params object to the client, not the whole arguments wrapper', async () => {
+      vi.mocked(mockClient.getTasks).mockResolvedValue([]);
+      vi.mocked(mockClient.getNotes).mockResolvedValue([]);
+      vi.mocked(mockClient.getLists).mockResolvedValue([]);
+      vi.mocked(mockClient.getFolders).mockResolvedValue([]);
+
+      await callTool('get_tasks', { params: { comp: 0 } });
+      expect(mockClient.getTasks).toHaveBeenCalledWith({ comp: 0 });
+
+      await callTool('get_notes', { params: { before: 123 } });
+      expect(mockClient.getNotes).toHaveBeenCalledWith({ before: 123 });
+
+      await callTool('get_lists', { params: { after: 456 } });
+      expect(mockClient.getLists).toHaveBeenCalledWith({ after: 456 });
+
+      await callTool('get_folders', { params: { id: 7 } });
+      expect(mockClient.getFolders).toHaveBeenCalledWith({ id: 7 });
+    });
   });
 
   describe('add_task', () => {
     it('returns structured result and content matching the payload', async () => {
-      const newTask = { id: 3, title: 'New Task', list_id: 1 };
+      const newTask = { id: 3, title: 'New Task', folder: 1 };
       vi.mocked(mockClient.addTask).mockResolvedValue(newTask as any);
 
       const response: any = await client.callTool(
         {
           name: 'add_task',
-          arguments: { title: 'New Task', list_id: 1 },
+          arguments: { title: 'New Task', folder: 1, note: 'body' },
         },
         CallToolResultSchema
       );
+
+      // Field names must reach the client as Toodledo expects them.
+      expect(mockClient.addTask).toHaveBeenCalledWith({ title: 'New Task', folder: 1, note: 'body' });
 
       expect(response.content[0].type).toBe('text');
       expect(JSON.parse(response.content[0].text as string)).toEqual({ result: newTask });
@@ -118,17 +140,19 @@ describe('Toodledo MCP Server', () => {
   describe('add_note', () => {
     it('returns structured result and content matching the payload (array)', async () => {
       const mockNotes = [
-        { id: 20, content: 'Note 1' },
+        { id: 20, title: 'Note 1', text: 'body' },
       ];
       vi.mocked(mockClient.addNote).mockResolvedValue(mockNotes as any);
 
       const response: any = await client.callTool(
         {
           name: 'add_note',
-          arguments: { notes: [{ content: 'Note 1' }] },
+          arguments: { notes: [{ title: 'Note 1', text: 'body' }] },
         },
         CallToolResultSchema
       );
+
+      expect(mockClient.addNote).toHaveBeenCalledWith({ notes: [{ title: 'Note 1', text: 'body' }] });
 
       expect(response.content[0].type).toBe('text');
       expect(JSON.parse(response.content[0].text as string)).toEqual({ result: mockNotes });
@@ -257,12 +281,13 @@ describe('Toodledo MCP Server', () => {
 
   describe('edit_list', () => {
     it('returns structured result and content matching the payload', async () => {
-      const updatedList = { id: 2, title: 'Updated List' };
+      // List IDs are hex strings, not numbers.
+      const updatedList = { id: 'abc123def456', title: 'Updated List' };
       vi.mocked(mockClient.editList).mockResolvedValue(updatedList as any);
 
-      const response = await callTool('edit_list', { id: 2, title: 'Updated List' });
+      const response = await callTool('edit_list', { id: 'abc123def456', title: 'Updated List' });
 
-      expect(mockClient.editList).toHaveBeenCalledWith(2, { title: 'Updated List' });
+      expect(mockClient.editList).toHaveBeenCalledWith('abc123def456', { title: 'Updated List' });
       expect(JSON.parse(response.content[0].text as string)).toEqual({ result: updatedList });
       expect(response.structuredContent?.result).toEqual(updatedList);
     });
@@ -272,23 +297,23 @@ describe('Toodledo MCP Server', () => {
     it('deletes a list and returns a plain-text confirmation', async () => {
       vi.mocked(mockClient.deleteList).mockResolvedValue(undefined as any);
 
-      const response = await callTool('delete_list', { ids: [7] });
+      const response = await callTool('delete_list', { ids: ['a7'] });
 
-      expect(mockClient.deleteList).toHaveBeenCalledWith(7);
-      expect(response.content[0].text).toBe('Successfully deleted 1 list(s): 7');
+      expect(mockClient.deleteList).toHaveBeenCalledWith('a7');
+      expect(response.content[0].text).toBe('Successfully deleted 1 list(s): a7');
       expect(response.structuredContent).toBeUndefined();
     });
 
     it('deletes multiple lists', async () => {
       vi.mocked(mockClient.deleteList).mockResolvedValue(undefined as any);
 
-      const response = await callTool('delete_list', { ids: [1, 2, 3] });
+      const response = await callTool('delete_list', { ids: ['a1', 'b2', 'c3'] });
 
       expect(mockClient.deleteList).toHaveBeenCalledTimes(3);
-      expect(mockClient.deleteList).toHaveBeenCalledWith(1);
-      expect(mockClient.deleteList).toHaveBeenCalledWith(2);
-      expect(mockClient.deleteList).toHaveBeenCalledWith(3);
-      expect(response.content[0].text).toBe('Successfully deleted 3 list(s): 1, 2, 3');
+      expect(mockClient.deleteList).toHaveBeenCalledWith('a1');
+      expect(mockClient.deleteList).toHaveBeenCalledWith('b2');
+      expect(mockClient.deleteList).toHaveBeenCalledWith('c3');
+      expect(response.content[0].text).toBe('Successfully deleted 3 list(s): a1, b2, c3');
     });
   });
 
@@ -309,9 +334,9 @@ describe('Toodledo MCP Server', () => {
       const newFolder = { id: 2, name: 'New Folder' };
       vi.mocked(mockClient.addFolder).mockResolvedValue(newFolder as any);
 
-      const response = await callTool('add_folder', { title: 'New Folder', description: 'desc' });
+      const response = await callTool('add_folder', { name: 'New Folder', private: 1 });
 
-      expect(mockClient.addFolder).toHaveBeenCalledWith('New Folder', 'desc');
+      expect(mockClient.addFolder).toHaveBeenCalledWith('New Folder', 1);
       expect(JSON.parse(response.content[0].text as string)).toEqual({ result: newFolder });
       expect(response.structuredContent?.result).toEqual(newFolder);
     });

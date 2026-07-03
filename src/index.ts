@@ -7,10 +7,24 @@ import {
 import * as dotenv from "dotenv";
 import { ToodledoClient } from "./client.js";
 
-dotenv.config();
+// quiet: dotenv v17 logs "injected env" to stdout by default, which corrupts
+// the stdio JSON-RPC transport
+dotenv.config({ quiet: true });
 
 /**
- * Toodledo MCP Server
+ * Build the Toodledo MCP server: registers all 17 tools (CRUD for tasks,
+ * notes, lists, and folders, plus ping) and their handlers, without
+ * connecting a transport.
+ *
+ * The `client` is injected so tests can drive the full MCP request path
+ * with a mock (see index.test.ts) instead of spawning a real process;
+ * main() wires in the real client and a stdio transport.
+ *
+ * Handler contract: every tool that declares an `outputSchema` returns a
+ * matching `structuredContent` — the SDK neither auto-populates nor
+ * validates it, so drift between the two is only caught by tests. Errors
+ * are reported as `{ isError: true }` results rather than thrown, per the
+ * MCP tool-call convention.
  */
 export async function createServer(client: ToodledoClient): Promise<Server> {
   const server = new Server(
@@ -75,9 +89,8 @@ export async function createServer(client: ToodledoClient): Promise<Server> {
           type: "object",
           properties: {
             title: { type: "string", description: "The title of the task" },
-            list_id: { type: "number", description: "The ID of the list the task belongs to" },
-            folder_id: { type: "number", description: "The ID of the folder the task belongs to" },
-            description: { type: "string", description: "The description/content of the task" }
+            folder: { type: "number", description: "ID of the folder to file the task in" },
+            note: { type: "string", description: "Free-text note/description attached to the task" }
           },
           required: ["title"],
         },
@@ -104,9 +117,8 @@ export async function createServer(client: ToodledoClient): Promise<Server> {
           properties: {
             id: { type: "number", description: "The ID of the task to update" },
             title: { type: "string" },
-            description: { type: "string" },
-            list_id: { type: "number" },
-            folder_id: { type: "number" },
+            folder: { type: "number", description: "ID of the folder to file the task in" },
+            note: { type: "string", description: "Free-text note/description attached to the task" },
           },
           required: ["id"],
         },
@@ -187,10 +199,11 @@ export async function createServer(client: ToodledoClient): Promise<Server> {
               items: {
                 type: "object",
                 properties: {
-                  task_id: { type: "number" },
-                  content: { type: "string" }
+                  title: { type: "string", description: "The title of the note" },
+                  text: { type: "string", description: "The body text of the note" },
+                  folder: { type: "number", description: "ID of the folder to file the note in" }
                 },
-                required: ["content"]
+                required: ["title"]
               }
             }
           },
@@ -222,7 +235,9 @@ export async function createServer(client: ToodledoClient): Promise<Server> {
           properties:
             {
             id: { type: "number", description: "The ID of the note to update" },
-            content: { type: "string" },
+            title: { type: "string" },
+            text: { type: "string", description: "The new body text of the note" },
+            folder: { type: "number" },
           },
           required: ["id"],
         },
@@ -333,7 +348,7 @@ export async function createServer(client: ToodledoClient): Promise<Server> {
           type: "object",
           properties:
           {
-            id: { type: "number" },
+            id: { type: "string", description: "The list ID (a hex string, not a number)" },
             title: { type: "string" },
             ref: { type: "string" },
           },
@@ -365,7 +380,7 @@ export async function createServer(client: ToodledoClient): Promise<Server> {
           type: "object",
           properties:
           {
-            ids: { type: "array", items: { type: "number" }, description: "Array of list IDs to delete" },
+            ids: { type: "array", items: { type: "string" }, description: "Array of list IDs to delete (hex strings, not numbers)" },
           },
           required: ["ids"],
         },
@@ -416,10 +431,10 @@ export async function createServer(client: ToodledoClient): Promise<Server> {
           type: "object",
           properties:
             {
-            title: { type: "string" },
-            description: { type: "string" }
+            name: { type: "string", description: "The name of the folder (max 64 chars)" },
+            private: { type: "number", description: "Set to 1 to make the folder private" }
           },
-          required: ["title"],
+          required: ["name"],
         },
         title: "Add Folder",
         outputSchema:
@@ -447,8 +462,9 @@ export async function createServer(client: ToodledoClient): Promise<Server> {
           properties:
             {
             id: { type: "number" },
-            title: { type: "string" },
-            description: { type: "string" },
+            name: { type: "string", description: "The new name of the folder" },
+            private: { type: "number" },
+            archived: { type: "number" },
           },
           required: ["id"],
         },
@@ -508,7 +524,7 @@ export async function createServer(client: ToodledoClient): Promise<Server> {
 
         // --- Task Tools ---
         case "get_tasks": {
-          const tasks = await client.getTasks(args);
+          const tasks = await client.getTasks(args?.params);
           return {
             content: [{ type: "text", text: JSON.stringify({ result: tasks }, null, 2) }],
             structuredContent: { result: tasks },
@@ -518,9 +534,8 @@ export async function createServer(client: ToodledoClient): Promise<Server> {
         case "add_task": {
           const task = await client.addTask({
             title: args.title,
-            list_id: args.list_id,
-            folder_id: args.folder_id,
-            description: args.description
+            folder: args.folder,
+            note: args.note
           });
           return {
             content: [{ type: "text", text: JSON.stringify({ result: task }, null, 2) }],
@@ -547,7 +562,7 @@ export async function createServer(client: ToodledoClient): Promise<Server> {
 
         // --- Note Tools ---
         case "get_notes": {
-          const notes = await client.getNotes(args);
+          const notes = await client.getNotes(args?.params);
           return {
             content: [{ type: "text", text: JSON.stringify({ result: notes }, null, 2) }],
             structuredContent: { result: notes },
@@ -581,7 +596,7 @@ export async function createServer(client: ToodledoClient): Promise<Server> {
 
         // --- List Tools ---
         case "get_lists": {
-          const lists = await client.getLists(args);
+          const lists = await client.getLists(args?.params);
           return {
             content: [{ type: "text", text: JSON.stringify({ result: lists }, null, 2) }],
             structuredContent: { result: lists },
@@ -597,8 +612,9 @@ export async function createServer(client: ToodledoClient): Promise<Server> {
         }
 
         case "edit_list": {
+          // List IDs are hex strings — do not coerce to Number.
           const { id, ...data } = args;
-          const list = await client.editList(Number(id), data);
+          const list = await client.editList(String(id), data);
           return {
             content: [{ type: "text", text: JSON.stringify({ result: list }, null, 2) }],
             structuredContent: { result: list },
@@ -606,8 +622,9 @@ export async function createServer(client: ToodledoClient): Promise<Server> {
         }
 
         case "delete_list": {
-          const ids = args.ids as number[];
-          await Promise.all(ids.map(id => client.deleteList(Number(id))));
+          // List IDs are hex strings — do not coerce to Number.
+          const ids = args.ids as string[];
+          await Promise.all(ids.map(id => client.deleteList(String(id))));
           return {
             content: [{ type: "text", text: `Successfully deleted ${ids.length} list(s): ${ids.join(', ')}` }],
           };
@@ -615,7 +632,7 @@ export async function createServer(client: ToodledoClient): Promise<Server> {
 
         // --- Folder Tools ---
         case "get_folders": {
-          const folders = await client.getFolders(args);
+          const folders = await client.getFolders(args?.params);
           return {
             content: [{ type: "text", text: JSON.stringify({ result: folders }, null, 2) }],
             structuredContent: { result: folders },
@@ -623,7 +640,7 @@ export async function createServer(client: ToodledoClient): Promise<Server> {
         }
 
         case "add_folder": {
-          const folder = await client.addFolder(args.title, args.description);
+          const folder = await client.addFolder(args.name, args.private);
           return {
             content: [{ type: "text", text: JSON.stringify({ result: folder }, null, 2) }],
             structuredContent: { result: folder },
@@ -666,9 +683,16 @@ export async function createServer(client: ToodledoClient): Promise<Server> {
   return server;
 }
 
+/**
+ * Entry point: build the real client from env credentials and serve over
+ * stdio. `TOODLEDO_REFRESH_TOKEN` is an optional override — normally the
+ * token comes from the token store populated by `npm run auth`.
+ */
 export async function main() {
   const clientId = process.env.TOODLEDO_CLIENT_ID;
   const clientSecret = process.env.TOODLEDO_CLIENT_SECRET;
+  // Refresh token is no longer required here — the client sources it from
+  // the token store (populated by `npm run auth`) if not provided directly.
   const refreshToken = process.env.TOODLEDO_REFRESH_TOKEN;
 
   if (!clientId || !clientSecret) {

@@ -1,12 +1,20 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { setupServer } from 'msw/node';
 import { http, HttpResponse } from 'msw';
+import * as path from 'path';
+import * as os from 'os';
+import * as fs from 'fs';
+import type { TokenStore } from '../src/tokenStore.js';
 import { ToodledoClient } from '../src/client.js';
 
 const server = setupServer();
 
 beforeAll(() => server.listen());
 afterAll(() => server.close());
+
+function makeTempDir(): string {
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'client-test-'));
+}
 
 describe('ToodledoClient', () => {
   const credentials = {
@@ -147,13 +155,13 @@ describe('ToodledoClient', () => {
         });
       }),
       http.post('https://api.toodledo.com/3/notes/add.php', () => {
-        return HttpResponse.json([{ id: 20, content: 'New Note' }]);
+        return HttpResponse.json([{ id: 20, title: 'New Note', text: 'body' }]);
       })
     );
 
     const client = new ToodledoClient(credentials);
-    const note = await client.addNote({ notes: [{ content: 'New Note' }] });
-    expect(note[0].content).toBe('New Note');
+    const note = await client.addNote({ notes: [{ title: 'New Note', text: 'body' }] });
+    expect(note[0].title).toBe('New Note');
   });
 
   it('should edit a note', async () => {
@@ -242,12 +250,13 @@ describe('ToodledoClient', () => {
         });
       }),
       http.post('https://api.toodledo.com/3/lists/edit.php', () => {
-        return HttpResponse.json({ id: 1, title: 'Updated List' });
+        return HttpResponse.json([{ id: 'abc123', title: 'Updated List', version: 2 }]);
       })
     );
 
     const client = new ToodledoClient(credentials);
-    const list = await client.editList(1, { title: 'Updated List' });
+    // Pass version explicitly so the client doesn't need to fetch it first.
+    const list = await client.editList('abc123', { title: 'Updated List', version: 1 });
     expect(list.title).toBe('Updated List');
   });
 
@@ -261,12 +270,12 @@ describe('ToodledoClient', () => {
         });
       }),
       http.post('https://api.toodledo.com/3/lists/delete.php', () => {
-        return HttpResponse.json({ status: 'success' });
+        return HttpResponse.json([{ id: 'abc123' }]);
       })
     );
 
     const client = new ToodledoClient(credentials);
-    await client.deleteList(1);
+    await client.deleteList('abc123');
   });
 
   it('should get folders', async () => {
@@ -346,8 +355,9 @@ describe('ToodledoClient', () => {
   });
 
   it('should throw error if no refresh token is provided', async () => {
-    const client = new ToodledoClient({ clientId: 'id', clientSecret: 'secret' });
-    await expect(client.getTasks()).rejects.toThrow('No refresh token available. Manual authentication required.');
+    const mockStore: TokenStore = { read() { return Promise.resolve(null); }, write() {} };
+    const client = new ToodledoClient({ clientId: 'id', clientSecret: 'secret' }, mockStore);
+    await expect(client.getTasks()).rejects.toThrow('No refresh token available');
   });
 
   it('should throw error if authentication fails', async () => {
@@ -371,5 +381,263 @@ describe('ToodledoClient', () => {
     );
     const client = new ToodledoClient(credentials);
     await expect(client.getTasks()).rejects.toThrow();
+  });
+
+  it('should fall back to the token store when no credential refresh token is given', async () => {
+    const tempDir = makeTempDir();
+    // Pre-populate the token file.
+    fs.writeFileSync(
+      path.join(tempDir, 'token.json'),
+      JSON.stringify({ refreshToken: 'stored_refresh_token' })
+    );
+
+    const mockStore: TokenStore = {
+      async read() { return 'stored_refresh_token'; },
+      write(_t: string) {},
+    };
+
+    server.use(
+      http.post('https://api.toodledo.com/3/account/token.php', () => {
+        return HttpResponse.json({
+          access_token: 'access_from_store',
+          refresh_token: 'new_stored_refresh',
+          expires_in: 3600,
+        });
+      }),
+      http.get('https://api.toodledo.com/3/tasks/get.php', () => {
+        return HttpResponse.json([{ id: 1, title: 'From store' }]);
+      })
+    );
+
+    const client = new ToodledoClient(
+      { clientId: 'id', clientSecret: 'secret' },
+      mockStore
+    );
+    const tasks = await client.getTasks();
+    expect(tasks[0].title).toBe('From store');
+  });
+
+  it('should write the rotated refresh token on successful refresh', async () => {
+    const writtenTokens: string[] = [];
+    const mockStore: TokenStore = {
+      read() { return Promise.resolve(null); },
+      write(t) { writtenTokens.push(t); return undefined; },
+    };
+
+    server.use(
+      http.post('https://api.toodledo.com/3/account/token.php', () => {
+        return HttpResponse.json({
+          access_token: 'access',
+          refresh_token: 'rotated_refresh',
+          expires_in: 3600,
+        });
+      }),
+      http.get('https://api.toodledo.com/3/tasks/get.php', () => {
+        return HttpResponse.json([{ id: 1, title: 'OK' }]);
+      })
+    );
+
+    const client = new ToodledoClient(
+      { clientId: 'id', clientSecret: 'secret', refreshToken: credentials.refreshToken },
+      mockStore
+    );
+    await client.getTasks();
+    expect(writtenTokens).toEqual(['rotated_refresh']);
+  });
+
+  it('should retry with the stored token when the in-memory token is stale', async () => {
+    // Simulates another process having rotated the token: the in-memory
+    // token is dead, but the store holds the newer, valid one.
+    const mockStore: TokenStore = {
+      read() { return Promise.resolve('newer_stored_token'); },
+      write(_t: string) {},
+    };
+
+    const attemptedTokens: string[] = [];
+    server.use(
+      http.post('https://api.toodledo.com/3/account/token.php', async ({ request }) => {
+        const body = Object.fromEntries(new URLSearchParams(await request.text()));
+        attemptedTokens.push(body.refresh_token);
+        if (body.refresh_token === 'stale_token') {
+          return new HttpResponse(null, { status: 400 });
+        }
+        return HttpResponse.json({
+          access_token: 'recovered_access',
+          refresh_token: 'rotated_again',
+          expires_in: 3600,
+        });
+      }),
+      http.get('https://api.toodledo.com/3/tasks/get.php', () => {
+        return HttpResponse.json([{ id: 1, title: 'Recovered' }]);
+      })
+    );
+
+    const client = new ToodledoClient(
+      { clientId: 'id', clientSecret: 'secret', refreshToken: 'stale_token' },
+      mockStore
+    );
+    const tasks = await client.getTasks();
+    expect(tasks[0].title).toBe('Recovered');
+    expect(attemptedTokens).toEqual(['stale_token', 'newer_stored_token']);
+  });
+
+  it('should drop a dead token on refresh failure so a later call can recover', async () => {
+    // First call: both the in-memory token and the store hold the same dead
+    // token, so authentication fails. The store is then updated (as if
+    // `npm run auth` re-ran), and a second call must recover without a
+    // process restart.
+    let storedToken = 'dead_token';
+    const mockStore: TokenStore = {
+      read() { return Promise.resolve(storedToken); },
+      write(t: string) { storedToken = t; },
+    };
+
+    server.use(
+      http.post('https://api.toodledo.com/3/account/token.php', async ({ request }) => {
+        const body = Object.fromEntries(new URLSearchParams(await request.text()));
+        if (body.refresh_token === 'dead_token') {
+          return new HttpResponse(null, { status: 400 });
+        }
+        return HttpResponse.json({
+          access_token: 'fresh_access',
+          refresh_token: 'fresh_rotated',
+          expires_in: 3600,
+        });
+      }),
+      http.get('https://api.toodledo.com/3/tasks/get.php', () => {
+        return HttpResponse.json([{ id: 1, title: 'After recovery' }]);
+      })
+    );
+
+    const client = new ToodledoClient(
+      { clientId: 'id', clientSecret: 'secret', refreshToken: 'dead_token' },
+      mockStore
+    );
+    await expect(client.getTasks()).rejects.toThrow(/Authentication failed/);
+
+    // The store is re-authorized out of band.
+    storedToken = 'fresh_token';
+    const tasks = await client.getTasks();
+    expect(tasks[0].title).toBe('After recovery');
+    expect(storedToken).toBe('fresh_rotated');
+  });
+
+  it('should not treat a token persistence failure as an auth failure', async () => {
+    // The refresh succeeded, so the old token is already invalidated by
+    // Toodledo — a failing write must not discard the new in-memory token.
+    const mockStore: TokenStore = {
+      read() { return Promise.resolve(null); },
+      write() { throw new Error('EACCES: permission denied'); },
+    };
+
+    server.use(
+      http.post('https://api.toodledo.com/3/account/token.php', () => {
+        return HttpResponse.json({
+          access_token: 'access',
+          refresh_token: 'rotated',
+          expires_in: 3600,
+        });
+      }),
+      http.get('https://api.toodledo.com/3/tasks/get.php', () => {
+        return HttpResponse.json([{ id: 1, title: 'Still works' }]);
+      })
+    );
+
+    const client = new ToodledoClient(
+      { clientId: 'id', clientSecret: 'secret', refreshToken: 'initial' },
+      mockStore
+    );
+    const tasks = await client.getTasks();
+    expect(tasks[0].title).toBe('Still works');
+  });
+
+  it('should throw a clear error when editing a list that does not exist', async () => {
+    const mockStore: TokenStore = {
+      read() { return Promise.resolve('token'); },
+      write(_t: string) {},
+    };
+
+    server.use(
+      http.post('https://api.toodledo.com/3/account/token.php', () => {
+        return HttpResponse.json({ access_token: 'a', refresh_token: 'b', expires_in: 3600 });
+      }),
+      // The version lookup finds no such list.
+      http.get('https://api.toodledo.com/3/lists/get.php', () => {
+        return HttpResponse.json([]);
+      })
+    );
+
+    const client = new ToodledoClient({ clientId: 'id', clientSecret: 'secret' }, mockStore);
+    await expect(client.editList('nonexistent', { title: 'X' })).rejects.toThrow(
+      /List nonexistent not found/
+    );
+  });
+
+  it('should prefer explicit credential refresh token over the store on construction', async () => {
+    const readCalls: string[] = [];
+    const mockStore: TokenStore = {
+      read() {
+        readCalls.push('read');
+        return Promise.resolve('store_token');
+      },
+      write(_t: string) {},
+    };
+
+    server.use(
+      http.post('https://api.toodledo.com/3/account/token.php', async ({ request }) => {
+        const body = Object.fromEntries(new URLSearchParams(await request.text()));
+        // The explicit credential should be used, not the store.
+        expect(body.refresh_token).toBe('credential_refresh');
+        return HttpResponse.json({
+          access_token: 'access',
+          refresh_token: 'new_one',
+          expires_in: 3600,
+        });
+      }),
+      http.get('https://api.toodledo.com/3/tasks/get.php', () => {
+        return HttpResponse.json([{ id: 1, title: 'OK' }]);
+      })
+    );
+
+    const client = new ToodledoClient(
+      { clientId: 'id', clientSecret: 'secret', refreshToken: 'credential_refresh' },
+      mockStore
+    );
+    await client.getTasks();
+    // read() should not have been called — the credential provided a token.
+    expect(readCalls).toEqual([]);
+  });
+
+  it('should fall back to the store only when no credential refresh token is given', async () => {
+    const readOrder: string[] = [];
+    const mockStore: TokenStore = {
+      read() {
+        readOrder.push('read');
+        return Promise.resolve('store_refresh_token');
+      },
+      write(_t: string) {},
+    };
+
+    server.use(
+      http.post('https://api.toodledo.com/3/account/token.php', async ({ request }) => {
+        const body = Object.fromEntries(new URLSearchParams(await request.text()));
+        expect(body.refresh_token).toBe('store_refresh_token');
+        return HttpResponse.json({
+          access_token: 'access_from_store_fallback',
+          refresh_token: 'rotated',
+          expires_in: 3600,
+        });
+      }),
+      http.get('https://api.toodledo.com/3/tasks/get.php', () => {
+        return HttpResponse.json([{ id: 1, title: 'OK' }]);
+      })
+    );
+
+    const client = new ToodledoClient(
+      { clientId: 'id', clientSecret: 'secret' }, // no refreshToken
+      mockStore
+    );
+    await client.getTasks();
+    expect(readOrder).toEqual(['read']);
   });
 });
