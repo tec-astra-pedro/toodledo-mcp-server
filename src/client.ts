@@ -3,6 +3,7 @@ import * as dotenv from 'dotenv';
 import type { TokenStore } from './tokenStore.js';
 import { createFileTokenStore } from './tokenStore.js';
 import { refreshToken as refreshAccessTokenHttp } from './oauth.js';
+import { ResponseCache } from './cache.js';
 import type {
   ToodledoTask,
   ToodledoNote,
@@ -12,6 +13,21 @@ import type {
   NoteCreateRequest,
   ListCreateRequest
 } from './types.js';
+
+/**
+ * Validator field names for each collection type — the `lastedit_*` and
+ * `lastdelete_*` timestamps returned by `/account/get.php`. Used both to
+ * validate cached collections against drift and to stamp fresh entries.
+ */
+const VALIDATORS_BY_URL: Record<string, string[]> = {
+  '/tasks/': ['lastedit_task', 'lastdelete_task'],
+  '/notes/': ['lastedit_note', 'lastdelete_note'],
+  '/lists/': ['lastedit_list'],
+  '/folders/': ['lastedit_folder'],
+};
+
+/** URL prefixes that also invalidate tasks and notes on write. */
+const CROSSTYPE_INVALIDATION_PREFIXES = ['/lists/', '/folders/'];
 
 // quiet: dotenv v17 logs "injected env" to stdout by default, which corrupts
 // the stdio JSON-RPC transport
@@ -54,6 +70,7 @@ export class ToodledoClient {
   private accessToken: string | null = null;
   private refreshToken: string | null = null;
   private tokenStore: TokenStore;
+  private cache: ResponseCache;
 
   /**
    * @param credentials App credentials; an explicit `refreshToken` here takes
@@ -61,12 +78,17 @@ export class ToodledoClient {
    * @param tokenStore Where rotated refresh tokens are persisted. Defaults to
    *   the file-backed store at the project root; inject a mock in tests so
    *   they never touch the real token file.
+   * @param cache In-memory response cache for GET endpoints. Honors
+   *   `TOODLEDO_CACHE_TTL` (seconds) and disables entirely when 0; default is
+   *   `new ResponseCache()`. Inject a mock or TTL=0 cache in tests so cached
+   *   reads don't trigger unhandled `/account/get.php` requests.
    */
-  constructor(credentials: ToodledoCredentials, tokenStore?: TokenStore) {
+  constructor(credentials: ToodledoCredentials, tokenStore?: TokenStore, cache?: ResponseCache) {
     this.credentials = credentials;
     // Explicit credential takes precedence over the store on construction.
     this.refreshToken = credentials.refreshToken ?? null;
     this.tokenStore = tokenStore ?? createFileTokenStore();
+    this.cache = cache ?? new ResponseCache();
     this.client = axios.create({
       baseURL: this.baseUrl,
     });
@@ -161,6 +183,116 @@ export class ToodledoClient {
     }
   }
 
+  // --- Caching integration ---
+
+  /**
+   * Fetch the account info from `/account/get.php`. Returns the account object
+   * including `lastedit_*`/`lastdelete_*` timestamps used for cache validation.
+   * Cached itself with a short TTL (~30s, capped to cache.ttlMs) so bursts of
+   * validations cost at most 2 calls/minute. Not exposed as an MCP tool —
+   * internal only.
+   */
+  async getAccountInfo(): Promise<any> {
+    const key = ResponseCache.key('/account/get.php');
+    if (this.cache.enabled) {
+      const fresh = this.cache.getFresh(key, Math.min(30_000, this.cache.ttlMs));
+      if (fresh) return fresh.data;
+    }
+    const data = await this.request<any>({ method: 'GET', url: '/account/get.php' });
+    if (this.cache.enabled) {
+      // Account snapshot has no collection validators — stamp an empty record.
+      this.cache.set(key, data);
+    }
+    return data;
+  }
+
+  /**
+   * Read path with caching + validation: serves cached data when fresh, or
+   * revalidates via getAccountInfo() against the entry's stored validator
+   * values (tasks: lastedit_task+lastdelete_task; notes: lastedit_note+...;
+   * etc.). Returns the cached/stale-then-freshly-fetched collection.
+   */
+  private async cachedGet<T>(urlPrefix: string, url: string, params?: any): Promise<T> {
+    const validators = VALIDATORS_BY_URL[urlPrefix];
+    // No validator map → bypass caching (e.g. non-collection endpoints).
+    if (!validators || validators.length === 0) {
+      return this.request<T>({ method: 'GET', url, params });
+    }
+
+    const key = ResponseCache.key(url, params);
+
+    if (!this.cache.enabled) {
+      // Cache disabled → direct request.
+      return this.request<T>({ method: 'GET', url, params });
+    }
+
+    // Trust window hit → serve without network I/O.
+    const fresh = this.cache.getFresh(key);
+    if (fresh) return fresh.data;
+
+    // Stale or miss → validation path.
+    let accountInfo: any;
+    try {
+      accountInfo = await this.getAccountInfo();
+    } catch (err: any) {
+      // If the account call fails, fall back to a direct fetch so callers don't
+      // see a hard failure just because cache validation broke.
+      console.warn(`ResponseCache: getAccountInfo() failed (${err.message}); bypassing for this read`);
+      return this.request<T>({ method: 'GET', url, params });
+    }
+
+    const currentValidators = validators.reduce<Record<string, number>>((acc, v) => {
+      acc[v] = accountInfo?.[v];
+      return acc;
+    }, {});
+
+    // Stale hit with matching validators → re-stamp as fresh and serve.
+    const stale = this.cache.get(key);
+    if (stale && this.validatorsMatch(stale.validators, currentValidators)) {
+      this.cache.refresh(stale);
+      return stale.data;
+    }
+
+    // Fetch the collection data directly.
+    const data = await this.request<T>({ method: 'GET', url, params });
+
+    // Stamp and store with the captured validators (captured BEFORE fetch so a
+    // concurrent external edit bumps lastdelete_* after validation but before
+    // set — next read will refetch).
+    if (this.cache.enabled) {
+      this.cache.set(key, data, currentValidators);
+    }
+    return data;
+  }
+
+  /** True iff every stored validator matches the corresponding current value. */
+  private validatorsMatch(stored: Record<string, number>, current: Record<string, number>): boolean {
+    for (const key of Object.keys(stored)) {
+      if ((stored as any)[key] !== (current as any)[key]) return false;
+    }
+    return true;
+  }
+
+  /**
+   * Invalidate cached collection data after a successful write. Invalidates by
+   * URL prefix, plus cross-type rules: folder/list writes also invalidate
+   * tasks and notes (deletion unassigns server-side). Always drops the cached
+   * account snapshot since its lastedit values just changed.
+   */
+  private invalidateOnWrite(urlPrefix: string): void {
+    if (!this.cache.enabled) return;
+    // Drop the account info first — its validator values just changed.
+    this.cache.delete(ResponseCache.key('/account/get.php'));
+    // Invalidate by URL prefix (e.g. /tasks/ → all task entries).
+    this.cache.invalidatePrefix(urlPrefix);
+    // Cross-type: folder/list writes also unassign tasks and notes server-side.
+    if (CROSSTYPE_INVALIDATION_PREFIXES.includes(urlPrefix)) {
+      for (const cross of ['/tasks/', '/notes/']) {
+        this.cache.invalidatePrefix(cross);
+      }
+    }
+  }
+
   // --- API Methods ---
 
   // Toodledo's write endpoints (tasks/notes/lists) take a JSON-encoded array
@@ -193,7 +325,7 @@ export class ToodledoClient {
    * (`{num, total}`) to the returned array.
    */
   async getTasks(params?: any): Promise<ToodledoTask[]> {
-    return this.request<ToodledoTask[]>({ method: 'GET', url: '/tasks/get.php', params });
+    return this.cachedGet<ToodledoTask[]>('/tasks/', '/tasks/get.php', params);
   }
 
   /** Create a task and return it with its assigned id. */
@@ -203,6 +335,7 @@ export class ToodledoClient {
       url: '/tasks/add.php',
       data: new URLSearchParams({ tasks: JSON.stringify([data]) }),
     });
+    this.invalidateOnWrite('/tasks/');
     return this.unwrapItem<ToodledoTask>(res);
   }
 
@@ -213,6 +346,7 @@ export class ToodledoClient {
       url: '/tasks/edit.php',
       data: new URLSearchParams({ tasks: JSON.stringify([{ ...data, id }]) }),
     });
+    this.invalidateOnWrite('/tasks/');
     return this.unwrapItem<ToodledoTask>(res);
   }
 
@@ -223,6 +357,7 @@ export class ToodledoClient {
       url: '/tasks/delete.php',
       data: new URLSearchParams({ tasks: JSON.stringify(ids) }),
     });
+    this.invalidateOnWrite('/tasks/');
     return this.unwrapItems(res);
   }
 
@@ -230,7 +365,7 @@ export class ToodledoClient {
 
   /** Fetch notes. `params` maps to notes/get.php (`after`/`before`, `id`, `start`/`num`). */
   async getNotes(params?: any): Promise<ToodledoNote[]> {
-    return this.request<ToodledoNote[]>({ method: 'GET', url: '/notes/get.php', params });
+    return this.cachedGet<ToodledoNote[]>('/notes/', '/notes/get.php', params);
   }
 
   /** Create one or more notes; returns them with assigned ids, in submission order. */
@@ -240,6 +375,7 @@ export class ToodledoClient {
       url: '/notes/add.php',
       data: new URLSearchParams({ notes: JSON.stringify(data.notes) } as any),
     });
+    this.invalidateOnWrite('/notes/');
     return this.unwrapItems<ToodledoNote>(res);
   }
 
@@ -250,6 +386,7 @@ export class ToodledoClient {
       url: '/notes/edit.php',
       data: new URLSearchParams({ notes: JSON.stringify([{ ...data, id }]) }),
     });
+    this.invalidateOnWrite('/notes/');
     return this.unwrapItems<ToodledoNote>(res);
   }
 
@@ -260,6 +397,7 @@ export class ToodledoClient {
       url: '/notes/delete.php',
       data: new URLSearchParams({ notes: JSON.stringify([id]) } as any),
     });
+    this.invalidateOnWrite('/notes/');
     return this.unwrapItems(res);
   }
 
@@ -268,7 +406,7 @@ export class ToodledoClient {
   /** Fetch lists. `params` maps to lists/get.php (`after`/`before`, `id`, `start`/`num`). */
   async getLists(params?: any): Promise<ToodledoList[]> {
     // Toodledo returns a literal null body when the account has no lists.
-    const res = await this.request<ToodledoList[]>({ method: 'GET', url: '/lists/get.php', params });
+    const res = await this.cachedGet<ToodledoList[] | null>('/lists/', '/lists/get.php', params);
     return res ?? [];
   }
 
@@ -280,6 +418,7 @@ export class ToodledoClient {
       url: '/lists/add.php',
       data: new URLSearchParams({ lists: JSON.stringify([{ ref: String(Date.now()), ...data }]) }),
     });
+    this.invalidateOnWrite('/lists/');
     return this.unwrapItem<ToodledoList>(res);
   }
 
@@ -303,6 +442,7 @@ export class ToodledoClient {
       url: '/lists/edit.php',
       data: new URLSearchParams({ lists: JSON.stringify([{ ...data, id, version }]) }),
     });
+    this.invalidateOnWrite('/lists/');
     return this.unwrapItem<ToodledoList>(res);
   }
 
@@ -313,6 +453,7 @@ export class ToodledoClient {
       url: '/lists/delete.php',
       data: new URLSearchParams({ lists: JSON.stringify([id]) }),
     });
+    this.invalidateOnWrite('/lists/');
     return this.unwrapItems(res);
   }
 
@@ -320,7 +461,7 @@ export class ToodledoClient {
 
   /** Fetch all folders (folders/get.php takes no filter parameters). */
   async getFolders(params?: any): Promise<ToodledoFolder[]> {
-    return this.request<ToodledoFolder[]>({ method: 'GET', url: '/folders/get.php', params });
+    return this.cachedGet<ToodledoFolder[]>('/folders/', '/folders/get.php', params);
   }
 
   /** Create a folder and return it with its assigned id. */
@@ -330,6 +471,7 @@ export class ToodledoClient {
       url: '/folders/add.php',
       data: new URLSearchParams({ name, ...(isPrivate !== undefined ? { private: String(isPrivate) } : {}) }),
     });
+    this.invalidateOnWrite('/folders/');
     return this.unwrapItem<ToodledoFolder>(res);
   }
 
@@ -340,6 +482,7 @@ export class ToodledoClient {
       url: '/folders/edit.php',
       data: new URLSearchParams({ id: id.toString(), ...data as any } as any),
     });
+    this.invalidateOnWrite('/folders/');
     return this.unwrapItem<ToodledoFolder>(res);
   }
 
@@ -350,6 +493,7 @@ export class ToodledoClient {
       url: '/folders/delete.php',
       data: new URLSearchParams({ id: id.toString() } as any),
     });
+    this.invalidateOnWrite('/folders/');
     return this.unwrapItems(res);
   }
 }
