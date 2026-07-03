@@ -95,9 +95,3 @@ export interface ListCreateRequest {
   ref?: string;
 }
 
-/** Generic envelope for API responses that report a status alongside data. */
-export interface CommonResponse<T> {
-  status: string;
-  data?: T;
-  error?: string;
-}
