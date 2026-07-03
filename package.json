@@ -10,7 +10,8 @@
     "dev": "node --loader ts-node/esm src/index.ts",
     "auth": "node --loader ts-node/esm src/authorize.ts",
     "test": "vitest",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "e2e": "npm run build && node --loader ts-node/esm scripts/e2e.ts"
   },
   "keywords": [],
   "author": "",
