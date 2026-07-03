@@ -38,6 +38,8 @@ function resolveTokenDir(): string {
 }
 
 export interface TokenStore {
+  /** Where the token is persisted, when the store is file-backed. */
+  readonly path?: string;
   read(): Promise<string | null>;
   write(refreshToken: string): void;
 }
@@ -45,15 +47,20 @@ export interface TokenStore {
 /**
  * Create a file-backed token store. The refresh token is persisted as JSON:
  *   { "refreshToken": "..." }
+ *
+ * Path precedence: explicit `tokenPath` argument, then the
+ * `TOODLEDO_TOKEN_PATH` env var, then `.toodledo-token.json` at the
+ * project root.
  */
 export function createFileTokenStore(tokenPath?: string): TokenStore {
   const resolved = tokenPath ?? process.env[TOKEN_ENV_VAR];
-  const dir = resolveTokenDir();
   const filePath = resolved
     ? path.resolve(resolved)
-    : path.join(dir, TOKEN_FILENAME);
+    : path.join(resolveTokenDir(), TOKEN_FILENAME);
 
   return {
+    path: filePath,
+
     async read(): Promise<string | null> {
       try {
         const raw: string = await fs.promises.readFile(filePath, 'utf-8');

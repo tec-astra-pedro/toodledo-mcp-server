@@ -1,34 +1,38 @@
 import { describe, it, expect } from 'vitest';
-import { buildAuthorizeUrl, validateState } from '../src/authorize.js';
+import { buildAuthorizeUrl, generateState, validateState } from '../src/authorize.js';
 
 describe('authorize (pure pieces)', () => {
   describe('buildAuthorizeUrl', () => {
     it('should include the required OAuth parameters', () => {
-      const url = buildAuthorizeUrl({ clientId: 'my-client-id' });
+      const url = buildAuthorizeUrl({ clientId: 'my-client-id', state: 'test-state' });
       const parsed = new URL(url);
       expect(parsed.origin + parsed.pathname).toBe('https://api.toodledo.com/3/account/authorize.php');
       expect(parsed.searchParams.get('response_type')).toBe('code');
       expect(parsed.searchParams.get('client_id')).toBe('my-client-id');
+      expect(parsed.searchParams.get('state')).toBe('test-state');
       expect(parsed.searchParams.get('scope')).toBe('basic tasks notes outlines lists write');
       expect(parsed.searchParams.get('redirect_uri')).toBe('http://127.0.0.1:8585/callback');
-    });
-
-    it('should include a random state parameter', () => {
-      const url = buildAuthorizeUrl({ clientId: 'id' });
-      const state = new URL(url).searchParams.get('state');
-      expect(state).toBeTruthy();
-      expect(state!.length).toBeGreaterThan(10); // crypto.randomUUID is 36 chars; our fallback should be long too.
     });
 
     it('should override scope and redirect_uri when provided', () => {
       const url = buildAuthorizeUrl({
         clientId: 'id',
+        state: 's',
         scope: 'tasks write',
         redirectUri: 'http://127.0.0.1:9999/callback',
       });
       const parsed = new URL(url);
       expect(parsed.searchParams.get('scope')).toBe('tasks write');
       expect(parsed.searchParams.get('redirect_uri')).toBe('http://127.0.0.1:9999/callback');
+    });
+  });
+
+  describe('generateState', () => {
+    it('should produce a long, unique value', () => {
+      const a = generateState();
+      const b = generateState();
+      expect(a.length).toBeGreaterThan(10); // crypto.randomUUID is 36 chars; the fallback is long too.
+      expect(a).not.toBe(b);
     });
   });
 

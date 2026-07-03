@@ -1,31 +1,44 @@
 import * as dotenv from 'dotenv';
-import * as fs from 'fs';
 import * as http from 'http';
-import * as path from 'path';
 import { URL } from 'url';
-import { fileURLToPath } from 'url';
 import { exchangeAuthorizationCode } from './oauth.js';
-import { createFileTokenStore, TOKEN_ENV_VAR } from './tokenStore.js';
+import { createFileTokenStore } from './tokenStore.js';
 
-dotenv.config();
+// quiet: dotenv v17 logs "injected env" (plus promotional tips) by default;
+// keep the CLI output clean, consistent with index.ts and client.ts.
+dotenv.config({ quiet: true });
 
 const DEFAULT_REDIRECT_URI = 'http://127.0.0.1:8585/callback';
 const DEFAULT_SCOPE = 'basic tasks notes outlines lists write';
 const AUTHORIZE_URL = 'https://api.toodledo.com/3/account/authorize.php';
 
 /**
- * Build the authorize URL for the Toodledo OAuth2 flow.
+ * Generate the random `state` value for CSRF protection. The caller must
+ * hold on to it and validate it against the OAuth callback.
+ */
+export function generateState(): string {
+  try {
+    return crypto.randomUUID();
+  } catch {
+    // Fallback for environments without WebCrypto (Node < 19 in some configs).
+    return Math.random().toString(36).slice(2) + Date.now().toString(36);
+  }
+}
+
+/**
+ * Build the authorize URL for the Toodledo OAuth2 flow. `state` is required
+ * so the caller can validate the callback — see generateState().
  */
 export function buildAuthorizeUrl(options: {
   clientId: string;
+  state: string;
   scope?: string;
   redirectUri?: string;
-  state?: string;
 }): string {
   const params = new URLSearchParams({
     response_type: 'code',
     client_id: options.clientId,
-    state: options.state ?? crypto.randomUUID(),
+    state: options.state,
     scope: options.scope ?? DEFAULT_SCOPE,
     redirect_uri: options.redirectUri ?? DEFAULT_REDIRECT_URI,
   });
@@ -79,17 +92,11 @@ export async function runAuthorize(): Promise<void> {
   const clientId: string = clientIdRaw!;
   const clientSecret: string = clientSecretRaw!;
 
-  // For this CLI entry point we use a temp file-based token store so tests/CI
-  // can override the path without affecting the real project root.
-  const tokenStore = createFileTokenStore(process.env[TOKEN_ENV_VAR]);
+  // Resolves to .toodledo-token.json at the project root, overridable via
+  // TOODLEDO_TOKEN_PATH (the store reads the env var itself).
+  const tokenStore = createFileTokenStore();
 
-  let state: string;
-  try {
-    state = crypto.randomUUID();
-  } catch {
-    // Fallback for environments without WebCrypto (Node < 19 in some configs).
-    state = Math.random().toString(36).slice(2) + Date.now().toString(36);
-  }
+  const state = generateState();
 
   const authorizeUrl = buildAuthorizeUrl({ clientId, scope: process.env.TOODLEDO_SCOPE, state });
 
@@ -109,8 +116,8 @@ export async function runAuthorize(): Promise<void> {
     const server = http.createServer(async (req, res) => {
       try {
         const parsedUrl = new URL(req.url ?? '/', `http://127.0.0.1:${port}`);
-        const code: string | undefined = parsedUrl.searchParams.get('code') as string | undefined;
-        const error: string | undefined = parsedUrl.searchParams.get('error') as string | undefined;
+        const code = parsedUrl.searchParams.get('code');
+        const error = parsedUrl.searchParams.get('error');
 
         if (parsedUrl.pathname !== '/callback') {
           res.writeHead(404);
@@ -159,7 +166,7 @@ export async function runAuthorize(): Promise<void> {
         server.close();
 
         console.log('\n✓ Authorization complete!');
-        console.log(`  Refresh token saved to: ${resolveTokenPath()}`);
+        console.log(`  Refresh token saved to: ${tokenStore.path}`);
         console.log('\nTo use with Claude Desktop, add the following to your config:\n');
         printClaudeDesktopSnippet(clientId, clientSecret);
         console.log('\nTo use with Claude Code:\n');
@@ -187,24 +194,6 @@ export async function runAuthorize(): Promise<void> {
       reject(err);
     });
   });
-}
-
-function resolveTokenPath(): string {
-  const override = process.env[TOKEN_ENV_VAR];
-  if (override) return path.resolve(override);
-
-  let dir = path.dirname(fileURLToPath(import.meta.url));
-  while (true) {
-    try {
-      fs.statSync(path.join(dir, 'package.json'));
-      return path.join(dir, '.toodledo-token.json');
-    } catch {
-      const parent = path.dirname(dir);
-      if (parent === dir) break;
-      dir = parent;
-    }
-  }
-  return path.join(dir, '.toodledo-token.json');
 }
 
 function printClaudeDesktopSnippet(clientId: string, clientSecret: string): void {

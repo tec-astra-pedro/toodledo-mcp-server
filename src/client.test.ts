@@ -522,6 +522,57 @@ describe('ToodledoClient', () => {
     expect(storedToken).toBe('fresh_rotated');
   });
 
+  it('should not treat a token persistence failure as an auth failure', async () => {
+    // The refresh succeeded, so the old token is already invalidated by
+    // Toodledo — a failing write must not discard the new in-memory token.
+    const mockStore: TokenStore = {
+      read() { return Promise.resolve(null); },
+      write() { throw new Error('EACCES: permission denied'); },
+    };
+
+    server.use(
+      http.post('https://api.toodledo.com/3/account/token.php', () => {
+        return HttpResponse.json({
+          access_token: 'access',
+          refresh_token: 'rotated',
+          expires_in: 3600,
+        });
+      }),
+      http.get('https://api.toodledo.com/3/tasks/get.php', () => {
+        return HttpResponse.json([{ id: 1, title: 'Still works' }]);
+      })
+    );
+
+    const client = new ToodledoClient(
+      { clientId: 'id', clientSecret: 'secret', refreshToken: 'initial' },
+      mockStore
+    );
+    const tasks = await client.getTasks();
+    expect(tasks[0].title).toBe('Still works');
+  });
+
+  it('should throw a clear error when editing a list that does not exist', async () => {
+    const mockStore: TokenStore = {
+      read() { return Promise.resolve('token'); },
+      write(_t: string) {},
+    };
+
+    server.use(
+      http.post('https://api.toodledo.com/3/account/token.php', () => {
+        return HttpResponse.json({ access_token: 'a', refresh_token: 'b', expires_in: 3600 });
+      }),
+      // The version lookup finds no such list.
+      http.get('https://api.toodledo.com/3/lists/get.php', () => {
+        return HttpResponse.json([]);
+      })
+    );
+
+    const client = new ToodledoClient({ clientId: 'id', clientSecret: 'secret' }, mockStore);
+    await expect(client.editList('nonexistent', { title: 'X' })).rejects.toThrow(
+      /List nonexistent not found/
+    );
+  });
+
   it('should prefer explicit credential refresh token over the store on construction', async () => {
     const readCalls: string[] = [];
     const mockStore: TokenStore = {

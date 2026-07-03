@@ -30,6 +30,14 @@ export interface TokenResponse {
   expires_in: number;
 }
 
+/**
+ * Client for the Toodledo API v3.
+ *
+ * Handles OAuth2 access-token lifecycle transparently: tokens are minted
+ * lazily from a refresh token (taken from the credentials or, failing that,
+ * the token store), rotated refresh tokens are persisted back to the store,
+ * and 401 responses trigger one refresh-and-retry.
+ */
 export class ToodledoClient {
   private readonly baseUrl = 'https://api.toodledo.com/3';
   private client: AxiosInstance;
@@ -66,26 +74,39 @@ export class ToodledoClient {
   }
 
   private async refreshAccessToken(): Promise<void> {
-    const attempted = this.refreshToken!;
-    try {
-      const response = await refreshAccessTokenHttp(this.credentials, attempted);
-      this.accessToken = response.access_token;
-      this.refreshToken = response.refresh_token;
-      // Persist the rotated refresh token so it survives process restarts.
-      this.tokenStore.write(response.refresh_token);
-    } catch (error: any) {
-      // The in-memory token may be stale: another process (or a re-run of
-      // `npm run auth`) may have rotated it and persisted a newer one.
-      const stored = await this.tokenStore.read().catch(() => null);
-      if (stored && stored !== attempted) {
-        this.refreshToken = stored;
-        return this.refreshAccessToken();
+    let response: TokenResponse | null = null;
+    // At most two attempts: the in-memory token may be stale — another
+    // process (or a re-run of `npm run auth`) may have rotated it and
+    // persisted a newer one — so on failure re-read the store and retry once
+    // with the stored token before giving up.
+    for (let attempt = 0; response === null; attempt++) {
+      const attempted = this.refreshToken!;
+      try {
+        response = await refreshAccessTokenHttp(this.credentials, attempted);
+      } catch (error: any) {
+        const stored = attempt === 0 ? await this.tokenStore.read().catch(() => null) : null;
+        if (stored && stored !== attempted) {
+          this.refreshToken = stored;
+          continue;
+        }
+        // Drop the dead token so a later call re-reads the store instead of
+        // retrying a token that Toodledo has already invalidated.
+        this.accessToken = null;
+        this.refreshToken = null;
+        throw new Error(`Authentication failed: ${error.message}`);
       }
-      // Drop the dead token so a later call re-reads the store instead of
-      // retrying a token that Toodledo has already invalidated.
-      this.accessToken = null;
-      this.refreshToken = null;
-      throw new Error(`Authentication failed: ${error.message}`);
+    }
+
+    this.accessToken = response.access_token;
+    this.refreshToken = response.refresh_token;
+    // Persist the rotated refresh token so it survives process restarts. A
+    // persistence failure must not be treated as an auth failure: Toodledo
+    // has already invalidated the previous token, so discarding the new one
+    // would break authentication until the user re-runs `npm run auth`.
+    try {
+      this.tokenStore.write(response.refresh_token);
+    } catch (err: any) {
+      console.error(`Warning: could not persist rotated refresh token: ${err.message}`);
     }
   }
 
@@ -227,6 +248,9 @@ export class ToodledoClient {
     if (version === undefined) {
       const existing = await this.getLists({ id });
       version = existing.find((l: any) => l.id === id)?.version;
+      if (version === undefined) {
+        throw new Error(`List ${id} not found — cannot determine its version for editing.`);
+      }
     }
     const res = await this.request<any>({
       method: 'POST',

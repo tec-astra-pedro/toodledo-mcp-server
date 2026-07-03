@@ -137,17 +137,19 @@ describe('Toodledo MCP Server', () => {
   describe('add_note', () => {
     it('returns structured result and content matching the payload (array)', async () => {
       const mockNotes = [
-        { id: 20, content: 'Note 1' },
+        { id: 20, title: 'Note 1', text: 'body' },
       ];
       vi.mocked(mockClient.addNote).mockResolvedValue(mockNotes as any);
 
       const response: any = await client.callTool(
         {
           name: 'add_note',
-          arguments: { notes: [{ content: 'Note 1' }] },
+          arguments: { notes: [{ title: 'Note 1', text: 'body' }] },
         },
         CallToolResultSchema
       );
+
+      expect(mockClient.addNote).toHaveBeenCalledWith({ notes: [{ title: 'Note 1', text: 'body' }] });
 
       expect(response.content[0].type).toBe('text');
       expect(JSON.parse(response.content[0].text as string)).toEqual({ result: mockNotes });
