@@ -15,13 +15,14 @@
 export interface ToodledoTask {
   id: number;
   title: string;
-  description?: string;
-  list_id?: number;
-  folder_id?: number;
-  status?: string;
-  due_date?: string;
-  created_at?: string;
-  updated_at?: string;
+  /** Unix timestamp of completion; 0 when the task is open. */
+  completed?: number;
+  modified?: number;
+  folder?: number;
+  note?: string;
+  duedate?: number;
+  priority?: number;
+  star?: number;
   [key: string]: any;
 }
 
@@ -68,12 +69,16 @@ export interface ToodledoFolder {
 
 // --- Request payload types ---
 
-/** Payload for creating a task via tasks/add.php. Only `title` is required. */
+/**
+ * Payload for creating a task via tasks/add.php. Only `title` is required.
+ * Field names must match Toodledo's exactly (`folder`, `note`, ...) —
+ * unknown fields are silently ignored by the API, not rejected.
+ */
 export interface TaskCreateRequest {
   title: string;
-  list_id?: number;
-  folder_id?: number;
-  description?: string;
+  folder?: number;
+  note?: string;
+  [key: string]: any;
 }
 
 /** Payload for creating notes via notes/add.php. Only `title` is required per note. */

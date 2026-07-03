@@ -89,9 +89,8 @@ export async function createServer(client: ToodledoClient): Promise<Server> {
           type: "object",
           properties: {
             title: { type: "string", description: "The title of the task" },
-            list_id: { type: "number", description: "The ID of the list the task belongs to" },
-            folder_id: { type: "number", description: "The ID of the folder the task belongs to" },
-            description: { type: "string", description: "The description/content of the task" }
+            folder: { type: "number", description: "ID of the folder to file the task in" },
+            note: { type: "string", description: "Free-text note/description attached to the task" }
           },
           required: ["title"],
         },
@@ -118,9 +117,8 @@ export async function createServer(client: ToodledoClient): Promise<Server> {
           properties: {
             id: { type: "number", description: "The ID of the task to update" },
             title: { type: "string" },
-            description: { type: "string" },
-            list_id: { type: "number" },
-            folder_id: { type: "number" },
+            folder: { type: "number", description: "ID of the folder to file the task in" },
+            note: { type: "string", description: "Free-text note/description attached to the task" },
           },
           required: ["id"],
         },
@@ -536,9 +534,8 @@ export async function createServer(client: ToodledoClient): Promise<Server> {
         case "add_task": {
           const task = await client.addTask({
             title: args.title,
-            list_id: args.list_id,
-            folder_id: args.folder_id,
-            description: args.description
+            folder: args.folder,
+            note: args.note
           });
           return {
             content: [{ type: "text", text: JSON.stringify({ result: task }, null, 2) }],

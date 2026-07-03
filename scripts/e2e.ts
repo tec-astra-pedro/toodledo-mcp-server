@@ -108,7 +108,7 @@ async function main() {
 
     // --- tasks lifecycle ---
     {
-      const r = await call('add_task', { title: `${PREFIX}-task`, folder_id: created.folderId });
+      const r = await call('add_task', { title: `${PREFIX}-task`, folder: created.folderId });
       const task = Array.isArray(r.data) ? r.data[0] : r.data;
       created.taskId = task?.id;
       const ok = r.ok && typeof created.taskId === 'number' && !task?.errorCode;
@@ -116,10 +116,12 @@ async function main() {
     }
     if (created.taskId) {
       const r = await call('edit_task', { id: created.taskId, title: `${PREFIX}-task-renamed` });
-      const g = await call('get_tasks', { params: { comp: 0 } });
+      // `folder` is opt-in via the fields param — request it to verify the
+      // task actually landed in the folder created above.
+      const g = await call('get_tasks', { params: { comp: 0, fields: 'folder' } });
       const found = Array.isArray(g.data) ? g.data.find((t: any) => t.id === created.taskId) : null;
-      const ok = r.ok && found?.title === `${PREFIX}-task-renamed`;
-      record('edit_task', 'renames the task (verified via get_tasks)', ok, r.error ?? `task now: ${JSON.stringify(found)?.slice(0, 200)}`);
+      const ok = r.ok && found?.title === `${PREFIX}-task-renamed` && found?.folder === created.folderId;
+      record('edit_task', 'renames the task and confirms folder placement (verified via get_tasks)', ok, r.error ?? `task now: ${JSON.stringify(found)?.slice(0, 200)}`);
     } else {
       record('edit_task', 'skipped', false, 'no task id from add_task');
     }

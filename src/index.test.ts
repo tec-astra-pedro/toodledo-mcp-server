@@ -95,16 +95,19 @@ describe('Toodledo MCP Server', () => {
 
   describe('add_task', () => {
     it('returns structured result and content matching the payload', async () => {
-      const newTask = { id: 3, title: 'New Task', list_id: 1 };
+      const newTask = { id: 3, title: 'New Task', folder: 1 };
       vi.mocked(mockClient.addTask).mockResolvedValue(newTask as any);
 
       const response: any = await client.callTool(
         {
           name: 'add_task',
-          arguments: { title: 'New Task', list_id: 1 },
+          arguments: { title: 'New Task', folder: 1, note: 'body' },
         },
         CallToolResultSchema
       );
+
+      // Field names must reach the client as Toodledo expects them.
+      expect(mockClient.addTask).toHaveBeenCalledWith({ title: 'New Task', folder: 1, note: 'body' });
 
       expect(response.content[0].type).toBe('text');
       expect(JSON.parse(response.content[0].text as string)).toEqual({ result: newTask });
