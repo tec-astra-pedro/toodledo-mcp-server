@@ -6,11 +6,17 @@ import * as os from 'os';
 import * as fs from 'fs';
 import type { TokenStore } from '../src/tokenStore.js';
 import { ToodledoClient } from '../src/client.js';
+import { ResponseCache } from '../src/cache.js';
 
 const server = setupServer();
 
 beforeAll(() => server.listen());
 afterAll(() => server.close());
+
+// Helper: build an account/get.php response with configurable validator stamps.
+function accountResponse(stamps: Record<string, number> = {}) {
+  return HttpResponse.json({ id: 1, ...stamps });
+}
 
 function makeTempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'client-test-'));
@@ -639,5 +645,234 @@ describe('ToodledoClient', () => {
     );
     await client.getTasks();
     expect(readOrder).toEqual(['read']);
+  });
+
+  // --- ResponseCache integration tests (cache enabled, env TTL=0 bypassed) ---
+
+  it('serves a second getTasks() from cache within the trust window', async () => {
+    let tasksCount = 0;
+    let accountCount = 0;
+
+    server.use(
+      http.post('https://api.toodledo.com/3/account/token.php', () => {
+        return HttpResponse.json({ access_token: 'a', refresh_token: 'r', expires_in: 3600 });
+      }),
+      http.get('https://api.toodledo.com/3/tasks/get.php', () => {
+        tasksCount++;
+        return HttpResponse.json([{ id: 1, title: 'Task' }]);
+      }),
+      http.get('https://api.toodledo.com/3/account/get.php', () => {
+        accountCount++;
+        // Stamp validators matching the initial fetch so a stale validation passes.
+        return accountResponse({ lastedit_task: 10, lastdelete_task: 20 });
+      })
+    );
+
+    const cache = new ResponseCache({ ttlMs: 5_000 });
+    const client = new ToodledoClient(credentials, undefined, cache);
+
+    await client.getTasks();
+    // Second call within the window should hit the cache — no tasks/get.
+    await client.getTasks();
+
+    expect(tasksCount).toBe(1);
+  });
+
+  it('revalidates with account/get but does NOT refetch when validators match', async () => {
+    let tasksCount = 0;
+    let accountCount = 0;
+    // Advance past the trust window on demand.
+    let now = 0;
+
+    server.use(
+      http.post('https://api.toodledo.com/3/account/token.php', () => {
+        return HttpResponse.json({ access_token: 'a', refresh_token: 'r', expires_in: 3600 });
+      }),
+      http.get('https://api.toodledo.com/3/tasks/get.php', () => {
+        tasksCount++;
+        return HttpResponse.json([{ id: 1, title: 'Task' }]);
+      }),
+      http.get('https://api.toodledo.com/3/account/get.php', () => {
+        accountCount++;
+        // Stamps match what we stamped on the initial fetch — validator path should pass.
+        return accountResponse({ lastedit_task: 10, lastdelete_task: 20 });
+      })
+    );
+
+    const cache = new ResponseCache({ ttlMs: 5_000, now: () => now });
+    const client = new ToodledoClient(credentials, undefined, cache);
+
+    // First call — stamps the entry with (lastedit_task=10, lastdelete_task=20).
+    await client.getTasks();
+    expect(tasksCount).toBe(1);
+    expect(accountCount).toBe(1);
+
+    // Advance past the trust window.
+    now = 6_000;
+
+    // Second call — should hit /account/get.php but NOT refetch tasks/get because validators match.
+    const result = await client.getTasks();
+    expect(result[0].title).toBe('Task');
+    expect(tasksCount).toBe(1); // not re-fetched
+    expect(accountCount).toBe(2); // account called for validation
+  });
+
+  it('refetches when lastdelete_task has been bumped (external deletion)', async () => {
+    let tasksCount = 0;
+    let now = 0;
+
+    server.use(
+      http.post('https://api.toodledo.com/3/account/token.php', () => {
+        return HttpResponse.json({ access_token: 'a', refresh_token: 'r', expires_in: 3600 });
+      }),
+      http.get('https://api.toodledo.com/3/tasks/get.php', () => {
+        tasksCount++;
+        // Second call returns updated data reflecting the deletion.
+        return HttpResponse.json(tasksCount === 1 ? [{ id: 1, title: 'Task' }] : [{ id: 2, title: 'Other' }]);
+      }),
+      http.get('https://api.toodledo.com/3/account/get.php', () => {
+        // First validation returns matching stamps; second call (after delete) bumps lastdelete.
+        return accountResponse(tasksCount === 0 ? { lastedit_task: 10, lastdelete_task: 20 } : { lastedit_task: 10, lastdelete_task: 99 });
+      })
+    );
+
+    const cache = new ResponseCache({ ttlMs: 5_000, now: () => now });
+    const client = new ToodledoClient(credentials, undefined, cache);
+
+    // Initial fetch.
+    await client.getTasks();
+    expect(tasksCount).toBe(1);
+
+    // External deletion bumped lastdelete_task; advance past the window.
+    now = 6_000;
+    const result = await client.getTasks();
+    expect(result[0].id).toBe(2);
+    expect(tasksCount).toBe(2); // re-fetched because validator mismatched
+  });
+
+  it('read-your-writes: addTask invalidates the tasks cache', async () => {
+    let tasksCount = 0;
+    let accountCount = 0;
+
+    server.use(
+      http.post('https://api.toodledo.com/3/account/token.php', () => {
+        return HttpResponse.json({ access_token: 'a', refresh_token: 'r', expires_in: 3600 });
+      }),
+      http.get('https://api.toodledo.com/3/tasks/get.php', () => {
+        tasksCount++;
+        // First call: pre-add snapshot. Second call (after add): includes the new task.
+        const data = tasksCount === 1 ? [{ id: 1, title: 'Old' }] : [{ id: 1, title: 'Old' }, { id: 99, title: 'New' }];
+        return HttpResponse.json(data);
+      }),
+      http.post('https://api.toodledo.com/3/tasks/add.php', () => {
+        accountCount++; // account invalidated on successful POST.
+        return HttpResponse.json({ id: 99, title: 'New' });
+      }),
+      http.get('https://api.toodledo.com/3/account/get.php', () => {
+        // Return matching stamps — the validator path should NOT refetch if cache were still present (but it was invalidated by addTask).
+        return accountResponse({ lastedit_task: 10, lastdelete_task: 20 });
+      })
+    );
+
+    const cache = new ResponseCache({ ttlMs: 5_000 });
+    const client = new ToodledoClient(credentials, undefined, cache);
+
+    // Seed the cache.
+    await client.getTasks();
+    expect(tasksCount).toBe(1);
+
+    // Add a task — should invalidate /tasks/ and /account/get.php.
+    await client.addTask({ title: 'New' });
+
+    // Next getTasks must refetch (cache invalidated), not serve stale.
+    const result = await client.getTasks();
+    expect(tasksCount).toBe(2);
+    expect(result.some((t: any) => t.id === 99)).toBe(true);
+  });
+
+  it('cross-type invalidation: deleteFolder also invalidates /tasks/ cache', async () => {
+    let tasksCount = 0;
+    const folderId = 42;
+
+    server.use(
+      http.post('https://api.toodledo.com/3/account/token.php', () => {
+        return HttpResponse.json({ access_token: 'a', refresh_token: 'r', expires_in: 3600 });
+      }),
+      http.get('https://api.toodledo.com/3/tasks/get.php', () => {
+        tasksCount++;
+        // Second call returns tasks without the deleted folder id.
+        return HttpResponse.json(tasksCount === 1 ? [{ id: 1, title: 'Task', folder: folderId }] : [{ id: 1, title: 'Task' }]);
+      }),
+      http.post('https://api.toodledo.com/3/folders/delete.php', () => {
+        return HttpResponse.json({ status: 'success' });
+      })
+    );
+
+    const cache = new ResponseCache({ ttlMs: 5_000 });
+    const client = new ToodledoClient(credentials, undefined, cache);
+
+    // Seed the tasks cache.
+    await client.getTasks();
+    expect(tasksCount).toBe(1);
+
+    // Delete a folder — cross-type rule should also invalidate /tasks/.
+    await client.deleteFolder(folderId);
+
+    // Next getTasks must refetch (folder deletion unassigns server-side).
+    await client.getTasks();
+    expect(tasksCount).toBe(2);
+  });
+
+  it('distinct params yield distinct cache entries', async () => {
+    let tasksComp0 = 0;
+    let tasksComp1 = 0;
+
+    server.use(
+      http.post('https://api.toodledo.com/3/account/token.php', () => {
+        return HttpResponse.json({ access_token: 'a', refresh_token: 'r', expires_in: 3600 });
+      }),
+      http.get('https://api.toodledo.com/3/tasks/get.php', ({ request }) => {
+        const params = Object.fromEntries(new URLSearchParams(new URL(request.url).search));
+        if (params.comp === '0') { tasksComp0++; return HttpResponse.json([{ id: 1, title: 'Open' }]); }
+        if (params.comp === '1') { tasksComp1++; return HttpResponse.json([{ id: 2, title: 'Done' }]); }
+        return new HttpResponse(null, { status: 400 });
+      })
+    );
+
+    const cache = new ResponseCache({ ttlMs: 5_000 });
+    const client = new ToodledoClient(credentials, undefined, cache);
+
+    await client.getTasks({ comp: 0 });
+    await client.getTasks({ comp: 1 });
+    // Each params variant hit the network once.
+    expect(tasksComp0).toBe(1);
+    expect(tasksComp1).toBe(1);
+
+    // Second call per variant should be a cache hit.
+    await client.getTasks({ comp: 0 });
+    await client.getTasks({ comp: 1 });
+    expect(tasksComp0).toBe(1);
+    expect(tasksComp1).toBe(1);
+  });
+
+  it('TOODLEDO_CACHE_TTL=0 (or ttlMs=0) disables caching — every read hits the network', async () => {
+    let tasksCount = 0;
+    const cache = new ResponseCache({ ttlMs: 0 }); // disabled.
+    expect(cache.enabled).toBe(false);
+
+    server.use(
+      http.post('https://api.toodledo.com/3/account/token.php', () => {
+        return HttpResponse.json({ access_token: 'a', refresh_token: 'r', expires_in: 3600 });
+      }),
+      http.get('https://api.toodledo.com/3/tasks/get.php', () => {
+        tasksCount++;
+        return HttpResponse.json([{ id: 1, title: 'Task' }]);
+      })
+    );
+
+    const client = new ToodledoClient(credentials, undefined, cache);
+    await client.getTasks();
+    await client.getTasks(); // should hit the network again — cache disabled.
+    expect(tasksCount).toBe(2);
   });
 });
