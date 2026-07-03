@@ -189,10 +189,11 @@ export async function createServer(client: ToodledoClient): Promise<Server> {
               items: {
                 type: "object",
                 properties: {
-                  task_id: { type: "number" },
-                  content: { type: "string" }
+                  title: { type: "string", description: "The title of the note" },
+                  text: { type: "string", description: "The body text of the note" },
+                  folder: { type: "number", description: "ID of the folder to file the note in" }
                 },
-                required: ["content"]
+                required: ["title"]
               }
             }
           },
@@ -224,7 +225,9 @@ export async function createServer(client: ToodledoClient): Promise<Server> {
           properties:
             {
             id: { type: "number", description: "The ID of the note to update" },
-            content: { type: "string" },
+            title: { type: "string" },
+            text: { type: "string", description: "The new body text of the note" },
+            folder: { type: "number" },
           },
           required: ["id"],
         },
@@ -335,7 +338,7 @@ export async function createServer(client: ToodledoClient): Promise<Server> {
           type: "object",
           properties:
           {
-            id: { type: "number" },
+            id: { type: "string", description: "The list ID (a hex string, not a number)" },
             title: { type: "string" },
             ref: { type: "string" },
           },
@@ -367,7 +370,7 @@ export async function createServer(client: ToodledoClient): Promise<Server> {
           type: "object",
           properties:
           {
-            ids: { type: "array", items: { type: "number" }, description: "Array of list IDs to delete" },
+            ids: { type: "array", items: { type: "string" }, description: "Array of list IDs to delete (hex strings, not numbers)" },
           },
           required: ["ids"],
         },
@@ -418,10 +421,10 @@ export async function createServer(client: ToodledoClient): Promise<Server> {
           type: "object",
           properties:
             {
-            title: { type: "string" },
-            description: { type: "string" }
+            name: { type: "string", description: "The name of the folder (max 64 chars)" },
+            private: { type: "number", description: "Set to 1 to make the folder private" }
           },
-          required: ["title"],
+          required: ["name"],
         },
         title: "Add Folder",
         outputSchema:
@@ -449,8 +452,9 @@ export async function createServer(client: ToodledoClient): Promise<Server> {
           properties:
             {
             id: { type: "number" },
-            title: { type: "string" },
-            description: { type: "string" },
+            name: { type: "string", description: "The new name of the folder" },
+            private: { type: "number" },
+            archived: { type: "number" },
           },
           required: ["id"],
         },
@@ -599,8 +603,9 @@ export async function createServer(client: ToodledoClient): Promise<Server> {
         }
 
         case "edit_list": {
+          // List IDs are hex strings — do not coerce to Number.
           const { id, ...data } = args;
-          const list = await client.editList(Number(id), data);
+          const list = await client.editList(String(id), data);
           return {
             content: [{ type: "text", text: JSON.stringify({ result: list }, null, 2) }],
             structuredContent: { result: list },
@@ -608,8 +613,9 @@ export async function createServer(client: ToodledoClient): Promise<Server> {
         }
 
         case "delete_list": {
-          const ids = args.ids as number[];
-          await Promise.all(ids.map(id => client.deleteList(Number(id))));
+          // List IDs are hex strings — do not coerce to Number.
+          const ids = args.ids as string[];
+          await Promise.all(ids.map(id => client.deleteList(String(id))));
           return {
             content: [{ type: "text", text: `Successfully deleted ${ids.length} list(s): ${ids.join(', ')}` }],
           };
@@ -625,7 +631,7 @@ export async function createServer(client: ToodledoClient): Promise<Server> {
         }
 
         case "add_folder": {
-          const folder = await client.addFolder(args.title, args.description);
+          const folder = await client.addFolder(args.name, args.private);
           return {
             content: [{ type: "text", text: JSON.stringify({ result: folder }, null, 2) }],
             structuredContent: { result: folder },

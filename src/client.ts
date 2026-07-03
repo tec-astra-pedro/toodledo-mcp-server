@@ -117,32 +117,58 @@ export class ToodledoClient {
 
   // --- API Methods ---
 
+  // Toodledo's write endpoints (tasks/notes/lists) take a JSON-encoded array
+  // form field and respond with HTTP 200 even when items fail — failures are
+  // reported inline as { errorCode, errorDesc } objects. These helpers
+  // surface such errors instead of returning them as data.
+
+  private static checkItem(item: any): void {
+    if (item && typeof item === 'object' && 'errorCode' in item) {
+      throw new Error(`Toodledo error ${item.errorCode}: ${item.errorDesc}`);
+    }
+  }
+
+  private unwrapItem<T>(response: any): T {
+    const item = Array.isArray(response) ? response[0] : response;
+    ToodledoClient.checkItem(item);
+    return item;
+  }
+
+  private unwrapItems<T>(response: any): T[] {
+    const items = Array.isArray(response) ? response : [response];
+    for (const item of items) ToodledoClient.checkItem(item);
+    return items;
+  }
+
   async getTasks(params?: any): Promise<ToodledoTask[]> {
     return this.request<ToodledoTask[]>({ method: 'GET', url: '/tasks/get.php', params });
   }
 
   async addTask(data: TaskCreateRequest): Promise<ToodledoTask> {
-    return this.request<ToodledoTask>({
+    const res = await this.request<any>({
       method: 'POST',
       url: '/tasks/add.php',
-      data: new URLSearchParams({ ...data, task_id: '0' } as any),
+      data: new URLSearchParams({ tasks: JSON.stringify([data]) }),
     });
+    return this.unwrapItem<ToodledoTask>(res);
   }
 
   async editTask(id: number, data: Partial<TaskCreateRequest>): Promise<ToodledoTask> {
-    return this.request<ToodledoTask>({
+    const res = await this.request<any>({
       method: 'POST',
       url: '/tasks/edit.php',
-      data: new URLSearchParams({ ...data, id: id.toString() } as any),
+      data: new URLSearchParams({ tasks: JSON.stringify([{ ...data, id }]) }),
     });
+    return this.unwrapItem<ToodledoTask>(res);
   }
 
   async deleteTask(ids: number[]): Promise<any> {
-    return this.request<any>({
+    const res = await this.request<any>({
       method: 'POST',
       url: '/tasks/delete.php',
-      data: new URLSearchParams({ ids: ids.join(',') } as any),
+      data: new URLSearchParams({ tasks: JSON.stringify(ids) }),
     });
+    return this.unwrapItems(res);
   }
 
   // --- Notes ---
@@ -151,56 +177,72 @@ export class ToodledoClient {
   }
 
   async addNote(data: NoteCreateRequest): Promise<ToodledoNote[]> {
-    return this.request<ToodledoNote[]>({
+    const res = await this.request<any>({
       method: 'POST',
       url: '/notes/add.php',
       data: new URLSearchParams({ notes: JSON.stringify(data.notes) } as any),
     });
+    return this.unwrapItems<ToodledoNote>(res);
   }
 
   async editNote(id: number, data: Partial<ToodledoNote>): Promise<ToodledoNote[]> {
-    return this.request<ToodledoNote[]>({
+    const res = await this.request<any>({
       method: 'POST',
       url: '/notes/edit.php',
-      data: new URLSearchParams({ id: id.toString(), ...data as any } as any),
+      data: new URLSearchParams({ notes: JSON.stringify([{ ...data, id }]) }),
     });
+    return this.unwrapItems<ToodledoNote>(res);
   }
 
   async deleteNote(id: number): Promise<any> {
-    return this.request<any>({
+    const res = await this.request<any>({
       method: 'POST',
       url: '/notes/delete.php',
       data: new URLSearchParams({ notes: JSON.stringify([id]) } as any),
     });
+    return this.unwrapItems(res);
   }
 
   // --- Lists ---
   async getLists(params?: any): Promise<ToodledoList[]> {
-    return this.request<ToodledoList[]>({ method: 'GET', url: '/lists/get.php', params });
+    // Toodledo returns a literal null body when the account has no lists.
+    const res = await this.request<ToodledoList[]>({ method: 'GET', url: '/lists/get.php', params });
+    return res ?? [];
   }
 
   async addList(data: ListCreateRequest): Promise<ToodledoList> {
-    return this.request<ToodledoList>({
+    // `ref` is mandatory on add (used by Toodledo for duplicate detection).
+    const res = await this.request<any>({
       method: 'POST',
       url: '/lists/add.php',
-      data: new URLSearchParams(data as any),
+      data: new URLSearchParams({ lists: JSON.stringify([{ ref: String(Date.now()), ...data }]) }),
     });
+    return this.unwrapItem<ToodledoList>(res);
   }
 
-  async editList(id: number, data: Partial<ToodledoList>): Promise<ToodledoList> {
-    return this.request<ToodledoList>({
+  async editList(id: string, data: Partial<ToodledoList>): Promise<ToodledoList> {
+    // `version` is mandatory on edit (conflict detection) — fetch it if the
+    // caller didn't supply one.
+    let version = (data as any).version;
+    if (version === undefined) {
+      const existing = await this.getLists({ id });
+      version = existing.find((l: any) => l.id === id)?.version;
+    }
+    const res = await this.request<any>({
       method: 'POST',
       url: '/lists/edit.php',
-      data: new URLSearchParams({ id: id.toString(), ...data as any } as any),
+      data: new URLSearchParams({ lists: JSON.stringify([{ ...data, id, version }]) }),
     });
+    return this.unwrapItem<ToodledoList>(res);
   }
 
-  async deleteList(id: number): Promise<any> {
-    return this.request<any>({
+  async deleteList(id: string): Promise<any> {
+    const res = await this.request<any>({
       method: 'POST',
       url: '/lists/delete.php',
-      data: new URLSearchParams({ id: id.toString() } as any),
+      data: new URLSearchParams({ lists: JSON.stringify([id]) }),
     });
+    return this.unwrapItems(res);
   }
 
   // --- Folders ---
@@ -208,27 +250,30 @@ export class ToodledoClient {
     return this.request<ToodledoFolder[]>({ method: 'GET', url: '/folders/get.php', params });
   }
 
-  async addFolder(title: string, description?: string): Promise<ToodledoFolder> {
-    return this.request<ToodledoFolder>({
+  async addFolder(name: string, isPrivate?: number): Promise<ToodledoFolder> {
+    const res = await this.request<any>({
       method: 'POST',
       url: '/folders/add.php',
-      data: new URLSearchParams({ title, description } as any),
+      data: new URLSearchParams({ name, ...(isPrivate !== undefined ? { private: String(isPrivate) } : {}) }),
     });
+    return this.unwrapItem<ToodledoFolder>(res);
   }
 
   async editFolder(id: number, data: Partial<ToodledoFolder>): Promise<ToodledoFolder> {
-    return this.request<ToodledoFolder>({
+    const res = await this.request<any>({
       method: 'POST',
       url: '/folders/edit.php',
       data: new URLSearchParams({ id: id.toString(), ...data as any } as any),
     });
+    return this.unwrapItem<ToodledoFolder>(res);
   }
 
   async deleteFolder(id: number): Promise<any> {
-    return this.request<any>({
+    const res = await this.request<any>({
       method: 'POST',
       url: '/folders/delete.php',
       data: new URLSearchParams({ id: id.toString() } as any),
     });
+    return this.unwrapItems(res);
   }
 }

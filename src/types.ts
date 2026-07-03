@@ -15,25 +15,34 @@ export interface ToodledoTask {
 
 export interface ToodledoNote {
   id: number;
-  task_id?: number;
-  content: string;
-  created_at: string;
-  updated_at: string;
+  title: string;
+  text?: string;
+  folder?: number;
+  added?: number;
+  modified?: number;
+  private?: number;
+  [key: string]: any;
 }
 
 export interface ToodledoList {
-  id: number;
+  // List IDs are hex strings (e.g. "6a4726f3d4eac24e1a0ad495"), unlike the
+  // numeric IDs used by tasks/notes/folders.
+  id: string;
   title: string;
   ref?: string;
   version?: number;
-  folder_id?: number;
-  description?: string;
+  keywords?: string;
+  note?: string;
+  [key: string]: any;
 }
 
 export interface ToodledoFolder {
   id: number;
-  title: string;
-  description?: string;
+  name: string;
+  private?: number;
+  archived?: number;
+  ord?: number;
+  [key: string]: any;
 }
 
 // Request payload types
@@ -46,8 +55,9 @@ export interface TaskCreateRequest {
 
 export interface NoteCreateRequest {
   notes: Array<{
-    task_id?: number;
-    content: string;
+    title: string;
+    text?: string;
+    folder?: number;
   }>;
 }
 

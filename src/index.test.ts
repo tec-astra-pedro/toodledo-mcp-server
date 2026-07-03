@@ -276,12 +276,13 @@ describe('Toodledo MCP Server', () => {
 
   describe('edit_list', () => {
     it('returns structured result and content matching the payload', async () => {
-      const updatedList = { id: 2, title: 'Updated List' };
+      // List IDs are hex strings, not numbers.
+      const updatedList = { id: 'abc123def456', title: 'Updated List' };
       vi.mocked(mockClient.editList).mockResolvedValue(updatedList as any);
 
-      const response = await callTool('edit_list', { id: 2, title: 'Updated List' });
+      const response = await callTool('edit_list', { id: 'abc123def456', title: 'Updated List' });
 
-      expect(mockClient.editList).toHaveBeenCalledWith(2, { title: 'Updated List' });
+      expect(mockClient.editList).toHaveBeenCalledWith('abc123def456', { title: 'Updated List' });
       expect(JSON.parse(response.content[0].text as string)).toEqual({ result: updatedList });
       expect(response.structuredContent?.result).toEqual(updatedList);
     });
@@ -291,23 +292,23 @@ describe('Toodledo MCP Server', () => {
     it('deletes a list and returns a plain-text confirmation', async () => {
       vi.mocked(mockClient.deleteList).mockResolvedValue(undefined as any);
 
-      const response = await callTool('delete_list', { ids: [7] });
+      const response = await callTool('delete_list', { ids: ['a7'] });
 
-      expect(mockClient.deleteList).toHaveBeenCalledWith(7);
-      expect(response.content[0].text).toBe('Successfully deleted 1 list(s): 7');
+      expect(mockClient.deleteList).toHaveBeenCalledWith('a7');
+      expect(response.content[0].text).toBe('Successfully deleted 1 list(s): a7');
       expect(response.structuredContent).toBeUndefined();
     });
 
     it('deletes multiple lists', async () => {
       vi.mocked(mockClient.deleteList).mockResolvedValue(undefined as any);
 
-      const response = await callTool('delete_list', { ids: [1, 2, 3] });
+      const response = await callTool('delete_list', { ids: ['a1', 'b2', 'c3'] });
 
       expect(mockClient.deleteList).toHaveBeenCalledTimes(3);
-      expect(mockClient.deleteList).toHaveBeenCalledWith(1);
-      expect(mockClient.deleteList).toHaveBeenCalledWith(2);
-      expect(mockClient.deleteList).toHaveBeenCalledWith(3);
-      expect(response.content[0].text).toBe('Successfully deleted 3 list(s): 1, 2, 3');
+      expect(mockClient.deleteList).toHaveBeenCalledWith('a1');
+      expect(mockClient.deleteList).toHaveBeenCalledWith('b2');
+      expect(mockClient.deleteList).toHaveBeenCalledWith('c3');
+      expect(response.content[0].text).toBe('Successfully deleted 3 list(s): a1, b2, c3');
     });
   });
 
@@ -328,9 +329,9 @@ describe('Toodledo MCP Server', () => {
       const newFolder = { id: 2, name: 'New Folder' };
       vi.mocked(mockClient.addFolder).mockResolvedValue(newFolder as any);
 
-      const response = await callTool('add_folder', { title: 'New Folder', description: 'desc' });
+      const response = await callTool('add_folder', { name: 'New Folder', private: 1 });
 
-      expect(mockClient.addFolder).toHaveBeenCalledWith('New Folder', 'desc');
+      expect(mockClient.addFolder).toHaveBeenCalledWith('New Folder', 1);
       expect(JSON.parse(response.content[0].text as string)).toEqual({ result: newFolder });
       expect(response.structuredContent?.result).toEqual(newFolder);
     });

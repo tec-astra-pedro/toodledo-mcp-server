@@ -155,13 +155,13 @@ describe('ToodledoClient', () => {
         });
       }),
       http.post('https://api.toodledo.com/3/notes/add.php', () => {
-        return HttpResponse.json([{ id: 20, content: 'New Note' }]);
+        return HttpResponse.json([{ id: 20, title: 'New Note', text: 'body' }]);
       })
     );
 
     const client = new ToodledoClient(credentials);
-    const note = await client.addNote({ notes: [{ content: 'New Note' }] });
-    expect(note[0].content).toBe('New Note');
+    const note = await client.addNote({ notes: [{ title: 'New Note', text: 'body' }] });
+    expect(note[0].title).toBe('New Note');
   });
 
   it('should edit a note', async () => {
@@ -250,12 +250,13 @@ describe('ToodledoClient', () => {
         });
       }),
       http.post('https://api.toodledo.com/3/lists/edit.php', () => {
-        return HttpResponse.json({ id: 1, title: 'Updated List' });
+        return HttpResponse.json([{ id: 'abc123', title: 'Updated List', version: 2 }]);
       })
     );
 
     const client = new ToodledoClient(credentials);
-    const list = await client.editList(1, { title: 'Updated List' });
+    // Pass version explicitly so the client doesn't need to fetch it first.
+    const list = await client.editList('abc123', { title: 'Updated List', version: 1 });
     expect(list.title).toBe('Updated List');
   });
 
@@ -269,12 +270,12 @@ describe('ToodledoClient', () => {
         });
       }),
       http.post('https://api.toodledo.com/3/lists/delete.php', () => {
-        return HttpResponse.json({ status: 'success' });
+        return HttpResponse.json([{ id: 'abc123' }]);
       })
     );
 
     const client = new ToodledoClient(credentials);
-    await client.deleteList(1);
+    await client.deleteList('abc123');
   });
 
   it('should get folders', async () => {
