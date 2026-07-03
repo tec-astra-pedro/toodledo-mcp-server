@@ -12,7 +12,19 @@ import { ToodledoClient } from "./client.js";
 dotenv.config({ quiet: true });
 
 /**
- * Toodledo MCP Server
+ * Build the Toodledo MCP server: registers all 17 tools (CRUD for tasks,
+ * notes, lists, and folders, plus ping) and their handlers, without
+ * connecting a transport.
+ *
+ * The `client` is injected so tests can drive the full MCP request path
+ * with a mock (see index.test.ts) instead of spawning a real process;
+ * main() wires in the real client and a stdio transport.
+ *
+ * Handler contract: every tool that declares an `outputSchema` returns a
+ * matching `structuredContent` — the SDK neither auto-populates nor
+ * validates it, so drift between the two is only caught by tests. Errors
+ * are reported as `{ isError: true }` results rather than thrown, per the
+ * MCP tool-call convention.
  */
 export async function createServer(client: ToodledoClient): Promise<Server> {
   const server = new Server(
@@ -674,6 +686,11 @@ export async function createServer(client: ToodledoClient): Promise<Server> {
   return server;
 }
 
+/**
+ * Entry point: build the real client from env credentials and serve over
+ * stdio. `TOODLEDO_REFRESH_TOKEN` is an optional override — normally the
+ * token comes from the token store populated by `npm run auth`.
+ */
 export async function main() {
   const clientId = process.env.TOODLEDO_CLIENT_ID;
   const clientSecret = process.env.TOODLEDO_CLIENT_SECRET;

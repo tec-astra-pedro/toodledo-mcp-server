@@ -1,3 +1,11 @@
+/**
+ * OAuth2 token-endpoint calls shared by the runtime client (refresh) and
+ * the `npm run auth` CLI (code exchange). Both grant types hit
+ * POST /3/account/token.php with HTTP Basic auth of clientId:clientSecret.
+ *
+ * All functions reject with the underlying axios error on non-2xx
+ * responses; callers decide how to surface that.
+ */
 import axios from 'axios';
 import type { TokenResponse, ToodledoCredentials } from './client.js';
 
@@ -56,7 +64,9 @@ export async function exchangeAuthorizationCode(
 }
 
 /**
- * Refresh an access token using a refresh token.
+ * Refresh an access token using a refresh token. The response contains a
+ * NEW refresh token and the one passed in is immediately invalidated —
+ * the caller must persist the replacement.
  */
 export async function refreshToken(
   credentials: ToodledoCredentials,

@@ -18,12 +18,22 @@ import type {
 // the stdio JSON-RPC transport
 dotenv.config({ quiet: true });
 
+/**
+ * OAuth2 app credentials from Toodledo app registration
+ * (https://api.toodledo.com/3/account/index.php). The optional
+ * `refreshToken` overrides the token store — mainly useful for tests.
+ */
 export interface ToodledoCredentials {
   clientId: string;
   clientSecret: string;
   refreshToken?: string;
 }
 
+/**
+ * Response of POST /3/account/token.php. Access tokens live ~2 hours;
+ * every response also rotates the refresh token, immediately invalidating
+ * the previous one — which is why rotations must be persisted.
+ */
 export interface TokenResponse {
   access_token: string;
   refresh_token: string;
@@ -46,6 +56,13 @@ export class ToodledoClient {
   private refreshToken: string | null = null;
   private tokenStore: TokenStore;
 
+  /**
+   * @param credentials App credentials; an explicit `refreshToken` here takes
+   *   precedence over the token store.
+   * @param tokenStore Where rotated refresh tokens are persisted. Defaults to
+   *   the file-backed store at the project root; inject a mock in tests so
+   *   they never touch the real token file.
+   */
   constructor(credentials: ToodledoCredentials, tokenStore?: TokenStore) {
     this.credentials = credentials;
     // Explicit credential takes precedence over the store on construction.
@@ -56,6 +73,11 @@ export class ToodledoClient {
     });
   }
 
+  /**
+   * Make sure an access token is in hand before a request goes out, minting
+   * one from the refresh token (credential first, then token store) if
+   * needed. Throws with a pointer to `npm run auth` when no token exists.
+   */
   private async ensureAuthenticated(): Promise<void> {
     if (this.accessToken) return;
     if (!this.refreshToken) {
@@ -110,6 +132,10 @@ export class ToodledoClient {
     }
   }
 
+  /**
+   * Execute an authenticated request. On a 401 (expired access token) the
+   * token is refreshed and the request retried once.
+   */
   private async request<T>(config: any): Promise<T> {
     await this.ensureAuthenticated();
     try {
@@ -161,10 +187,17 @@ export class ToodledoClient {
     return items;
   }
 
+  /**
+   * Fetch tasks. `params` maps directly to tasks/get.php query parameters
+   * (`comp` 0/1/-1, `after`/`before` timestamps, `id`, `fields`,
+   * `start`/`num`). Note: Toodledo prepends a summary object
+   * (`{num, total}`) to the returned array.
+   */
   async getTasks(params?: any): Promise<ToodledoTask[]> {
     return this.request<ToodledoTask[]>({ method: 'GET', url: '/tasks/get.php', params });
   }
 
+  /** Create a task and return it with its assigned id. */
   async addTask(data: TaskCreateRequest): Promise<ToodledoTask> {
     const res = await this.request<any>({
       method: 'POST',
@@ -174,6 +207,7 @@ export class ToodledoClient {
     return this.unwrapItem<ToodledoTask>(res);
   }
 
+  /** Update fields of an existing task and return the edited task. */
   async editTask(id: number, data: Partial<TaskCreateRequest>): Promise<ToodledoTask> {
     const res = await this.request<any>({
       method: 'POST',
@@ -183,6 +217,7 @@ export class ToodledoClient {
     return this.unwrapItem<ToodledoTask>(res);
   }
 
+  /** Delete tasks by id; returns one `{id}` entry per deleted task. */
   async deleteTask(ids: number[]): Promise<any> {
     const res = await this.request<any>({
       method: 'POST',
@@ -193,10 +228,13 @@ export class ToodledoClient {
   }
 
   // --- Notes ---
+
+  /** Fetch notes. `params` maps to notes/get.php (`after`/`before`, `id`, `start`/`num`). */
   async getNotes(params?: any): Promise<ToodledoNote[]> {
     return this.request<ToodledoNote[]>({ method: 'GET', url: '/notes/get.php', params });
   }
 
+  /** Create one or more notes; returns them with assigned ids, in submission order. */
   async addNote(data: NoteCreateRequest): Promise<ToodledoNote[]> {
     const res = await this.request<any>({
       method: 'POST',
@@ -206,6 +244,7 @@ export class ToodledoClient {
     return this.unwrapItems<ToodledoNote>(res);
   }
 
+  /** Update fields (`title`, `text`, `folder`) of an existing note. */
   async editNote(id: number, data: Partial<ToodledoNote>): Promise<ToodledoNote[]> {
     const res = await this.request<any>({
       method: 'POST',
@@ -215,6 +254,7 @@ export class ToodledoClient {
     return this.unwrapItems<ToodledoNote>(res);
   }
 
+  /** Delete a single note by id. */
   async deleteNote(id: number): Promise<any> {
     const res = await this.request<any>({
       method: 'POST',
@@ -225,12 +265,15 @@ export class ToodledoClient {
   }
 
   // --- Lists ---
+
+  /** Fetch lists. `params` maps to lists/get.php (`after`/`before`, `id`, `start`/`num`). */
   async getLists(params?: any): Promise<ToodledoList[]> {
     // Toodledo returns a literal null body when the account has no lists.
     const res = await this.request<ToodledoList[]>({ method: 'GET', url: '/lists/get.php', params });
     return res ?? [];
   }
 
+  /** Create a list and return it with its assigned (hex-string) id. */
   async addList(data: ListCreateRequest): Promise<ToodledoList> {
     // `ref` is mandatory on add (used by Toodledo for duplicate detection).
     const res = await this.request<any>({
@@ -241,6 +284,10 @@ export class ToodledoClient {
     return this.unwrapItem<ToodledoList>(res);
   }
 
+  /**
+   * Update fields of an existing list.
+   * @throws when the list does not exist (its `version` cannot be resolved).
+   */
   async editList(id: string, data: Partial<ToodledoList>): Promise<ToodledoList> {
     // `version` is mandatory on edit (conflict detection) — fetch it if the
     // caller didn't supply one.
@@ -260,6 +307,7 @@ export class ToodledoClient {
     return this.unwrapItem<ToodledoList>(res);
   }
 
+  /** Delete a single list by its hex-string id. */
   async deleteList(id: string): Promise<any> {
     const res = await this.request<any>({
       method: 'POST',
@@ -270,10 +318,13 @@ export class ToodledoClient {
   }
 
   // --- Folders ---
+
+  /** Fetch all folders (folders/get.php takes no filter parameters). */
   async getFolders(params?: any): Promise<ToodledoFolder[]> {
     return this.request<ToodledoFolder[]>({ method: 'GET', url: '/folders/get.php', params });
   }
 
+  /** Create a folder and return it with its assigned id. */
   async addFolder(name: string, isPrivate?: number): Promise<ToodledoFolder> {
     const res = await this.request<any>({
       method: 'POST',
@@ -283,6 +334,7 @@ export class ToodledoClient {
     return this.unwrapItem<ToodledoFolder>(res);
   }
 
+  /** Update fields (`name`, `private`, `archived`) of an existing folder. */
   async editFolder(id: number, data: Partial<ToodledoFolder>): Promise<ToodledoFolder> {
     const res = await this.request<any>({
       method: 'POST',
@@ -292,6 +344,7 @@ export class ToodledoClient {
     return this.unwrapItem<ToodledoFolder>(res);
   }
 
+  /** Delete a single folder by id. */
   async deleteFolder(id: number): Promise<any> {
     const res = await this.request<any>({
       method: 'POST',

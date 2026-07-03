@@ -1,3 +1,16 @@
+/**
+ * `npm run auth` — one-time, browser-based OAuth2 authorization.
+ *
+ * Flow: build the consent URL (with a random `state` for CSRF protection),
+ * open it in the default browser, catch Toodledo's redirect on a
+ * short-lived local HTTP server, exchange the authorization code for a
+ * token pair, and persist the refresh token via the token store. From then
+ * on the running server keeps itself authorized by persisting each token
+ * rotation — this command should not need to be run again.
+ *
+ * The redirect URI (default http://127.0.0.1:8585/callback, override with
+ * TOODLEDO_REDIRECT_URI) must be registered on the Toodledo app.
+ */
 import * as dotenv from 'dotenv';
 import * as http from 'http';
 import { URL } from 'url';
@@ -46,8 +59,10 @@ export function buildAuthorizeUrl(options: {
 }
 
 /**
- * Validate the `state` parameter returned in the OAuth callback matches
- * the one we stored at authorization start. Returns true if valid.
+ * Validate that the `state` parameter returned in the OAuth callback matches
+ * the one generated at authorization start (CSRF protection). Compared in
+ * constant time so the comparison itself leaks nothing about the expected
+ * value.
  */
 export function validateState(actual: string | null, expected: string): boolean {
   if (!actual || actual.length !== expected.length) return false;
@@ -83,6 +98,12 @@ function printHelp(): void {
   process.exit(1);
 }
 
+/**
+ * Run the interactive authorization flow end to end. Resolves once the
+ * refresh token is persisted; exits the process directly on unrecoverable
+ * user-facing failures (missing credentials, consent denied, CSRF
+ * mismatch, port in use).
+ */
 export async function runAuthorize(): Promise<void> {
   const clientIdRaw = process.env.TOODLEDO_CLIENT_ID;
   const clientSecretRaw = process.env.TOODLEDO_CLIENT_SECRET;

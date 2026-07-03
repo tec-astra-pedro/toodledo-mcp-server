@@ -1,3 +1,11 @@
+/**
+ * Persistence for the rotating Toodledo refresh token.
+ *
+ * Toodledo invalidates a refresh token the moment it is used, so the
+ * replacement must survive process restarts — MCP hosts spawn a fresh
+ * server per session. The token lives outside .env (which holds only the
+ * static client id/secret) in a gitignored JSON file.
+ */
 import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
@@ -40,7 +48,12 @@ function resolveTokenDir(): string {
 export interface TokenStore {
   /** Where the token is persisted, when the store is file-backed. */
   readonly path?: string;
+  /**
+   * Return the stored refresh token, or null when none has been saved yet.
+   * Throws on an unreadable or corrupt token file (anything but ENOENT).
+   */
   read(): Promise<string | null>;
+  /** Persist a rotated refresh token, creating parent directories as needed. */
   write(refreshToken: string): void;
 }
 
