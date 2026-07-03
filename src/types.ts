@@ -1,5 +1,3 @@
-import type { AxiosInstance } from 'axios';
-
 /**
  * Domain models for the Toodledo API v3.
  *

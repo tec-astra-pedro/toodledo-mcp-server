@@ -10,8 +10,7 @@ import type {
   ToodledoFolder,
   TaskCreateRequest,
   NoteCreateRequest,
-  ListCreateRequest,
-  CommonResponse
+  ListCreateRequest
 } from './types.js';
 
 // quiet: dotenv v17 logs "injected env" to stdout by default, which corrupts
