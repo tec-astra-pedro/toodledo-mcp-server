@@ -10,3 +10,10 @@ import * as path from 'path';
 // override this (tokenStore.test.ts does).
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'toodledo-test-'));
 process.env.TOODLEDO_TOKEN_PATH = path.join(dir, '.toodledo-token.json');
+
+// Disable the response cache globally for tests. Existing client tests use
+// msw without a handler for `/account/get.php`, which the cache's validation
+// path calls — leaving the cache enabled would break dozens of tests with
+// unhandled requests. Cache tests inject an explicit `new ResponseCache({
+// ttlMs, now })` instead.
+process.env.TOODLEDO_CACHE_TTL = '0';

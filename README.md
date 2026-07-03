@@ -98,4 +98,24 @@ creates itself (prefixed `E2E-TEST-`) and everything is deleted before exit.
 It needs a populated `.env` and a valid `.toodledo-token.json`, so it is a
 manual check — it does not run in CI.
 
+### Caching
+
+The server caches GET responses in memory to keep API call volume low —
+Toodledo allows only 100 calls per access token, and an LLM session can
+easily issue dozens of `get_tasks` calls while reasoning. The cache uses a
+**60-second trust window** (entries served without network I/O within that
+window) plus **timestamp validation**: stale entries are revalidated against
+the account's `lastedit_*`/`lastdelete_task` stamps from `/account/get.php`,
+so the cache stays exact even when edits happen in the Toodledo web app or
+mobile client. Writes invalidate immediately (and folder/list deletions also
+invalidate tasks and notes, since that unassigns them server-side), so tool
+users always read their own writes.
+
+**Worst-case external staleness:** ~90 seconds — 60 s trust window plus the
+30 s cache TTL on the account snapshot itself. (Edits made through this
+server invalidate instantly.)
+
+To disable caching entirely, set `TOODLEDO_CACHE_TTL=0` in the environment;
+every read then hits the network. (This is useful for debugging.)
+
 Design and decision records live in [`docs/adr/`](docs/adr/).
