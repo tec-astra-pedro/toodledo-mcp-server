@@ -54,13 +54,17 @@ describe('ResponseCache', () => {
 
   it('invalidates entries by URL prefix', () => {
     const { cache } = make();
-    cache.set('/tasks/get.php|{"comp":0}', 'task_1');
-    cache.set('/tasks/get.php|{"comp":1}', 'task_2');
-    cache.set('/notes/get.php|', 'note_1');
+    const taskKey1 = ResponseCache.key('/tasks/get.php', { comp: 0 });
+    const taskKey2 = ResponseCache.key('/tasks/get.php', { comp: 1 });
+    const noteKey = ResponseCache.key('/notes/get.php');
+    cache.set(taskKey1, 'task_1');
+    cache.set(taskKey2, 'task_2');
+    cache.set(noteKey, 'note_1');
     cache.invalidatePrefix('/tasks/');
-    expect(cache.getFresh('/tasks/get.php|"\\u007b\\"comp\\":0\\u007d"')).toBeUndefined();
+    expect(cache.getFresh(taskKey1)).toBeUndefined();
+    expect(cache.getFresh(taskKey2)).toBeUndefined();
     // Notes untouched.
-    expect(cache.getFresh('/notes/get.php|')?.data).toBe('note_1');
+    expect(cache.getFresh(noteKey)?.data).toBe('note_1');
   });
 
   it('clears all entries', () => {
