@@ -245,9 +245,9 @@ export class ToodledoClient {
     // /account/get.php. Stamp with empty validators; subsequent stale hits will
     // then call /account/get.php for real validator comparison. ADR item 8.
     if (!existing) {
+      const gen = this.cache.generation;
       const data = await this.request<T>({ method: 'GET', url, params });
       ToodledoClient.checkItem(data);
-      const gen = this.cache.generation;
       if (this.cache.generation === gen) {
         this.cache.set(key, data, {});
       }
