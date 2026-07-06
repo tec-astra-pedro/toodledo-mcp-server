@@ -13,6 +13,10 @@ const server = setupServer();
 beforeAll(() => server.listen());
 afterAll(() => server.close());
 
+// Mock token store: used by cache-integration tests to avoid touching the real token file.
+// read() returns null so the client relies on credentials.refreshToken; write() is a no-op.
+const MOCK_STORE: TokenStore = { read() { return Promise.resolve(null); }, write() {} };
+
 // Helper: build an account/get.php response with configurable validator stamps.
 function accountResponse(stamps: Record<string, number> = {}) {
   return HttpResponse.json({ id: 1, ...stamps });
@@ -669,7 +673,7 @@ describe('ToodledoClient', () => {
     );
 
     const cache = new ResponseCache({ ttlMs: 5_000 });
-    const client = new ToodledoClient(credentials, undefined, cache);
+    const client = new ToodledoClient(credentials, MOCK_STORE, cache);
 
     await client.getTasks();
     // Second call within the window should hit the cache — no tasks/get.
@@ -700,7 +704,7 @@ describe('ToodledoClient', () => {
     );
 
     const cache = new ResponseCache({ ttlMs: 5_000, now: () => now });
-    const client = new ToodledoClient(credentials, undefined, cache);
+    const client = new ToodledoClient(credentials, MOCK_STORE, cache);
 
     // First call — stamps the entry with (lastedit_task=10, lastdelete_task=20).
     await client.getTasks();
@@ -737,7 +741,7 @@ describe('ToodledoClient', () => {
     );
 
     const cache = new ResponseCache({ ttlMs: 5_000, now: () => now });
-    const client = new ToodledoClient(credentials, undefined, cache);
+    const client = new ToodledoClient(credentials, MOCK_STORE, cache);
 
     // Initial fetch.
     await client.getTasks();
@@ -775,7 +779,7 @@ describe('ToodledoClient', () => {
     );
 
     const cache = new ResponseCache({ ttlMs: 5_000 });
-    const client = new ToodledoClient(credentials, undefined, cache);
+    const client = new ToodledoClient(credentials, MOCK_STORE, cache);
 
     // Seed the cache.
     await client.getTasks();
@@ -809,7 +813,7 @@ describe('ToodledoClient', () => {
     );
 
     const cache = new ResponseCache({ ttlMs: 5_000 });
-    const client = new ToodledoClient(credentials, undefined, cache);
+    const client = new ToodledoClient(credentials, MOCK_STORE, cache);
 
     // Seed the tasks cache.
     await client.getTasks();
@@ -831,6 +835,10 @@ describe('ToodledoClient', () => {
       http.post('https://api.toodledo.com/3/account/token.php', () => {
         return HttpResponse.json({ access_token: 'a', refresh_token: 'r', expires_in: 3600 });
       }),
+      http.get('https://api.toodledo.com/3/account/get.php', () => {
+        // No validator stamps — validatorsMatch({}, {}) returns true so stale hits refresh and serve.
+        return HttpResponse.json({});
+      }),
       http.get('https://api.toodledo.com/3/tasks/get.php', ({ request }) => {
         const params = Object.fromEntries(new URLSearchParams(new URL(request.url).search));
         if (params.comp === '0') { tasksComp0++; return HttpResponse.json([{ id: 1, title: 'Open' }]); }
@@ -840,17 +848,17 @@ describe('ToodledoClient', () => {
     );
 
     const cache = new ResponseCache({ ttlMs: 5_000 });
-    const client = new ToodledoClient(credentials, undefined, cache);
+    const client = new ToodledoClient(credentials, MOCK_STORE, cache);
 
-    await client.getTasks({ comp: 0 });
-    await client.getTasks({ comp: 1 });
+    await client.getTasks({ comp: '0' });
+    await client.getTasks({ comp: '1' });
     // Each params variant hit the network once.
     expect(tasksComp0).toBe(1);
     expect(tasksComp1).toBe(1);
 
     // Second call per variant should be a cache hit.
-    await client.getTasks({ comp: 0 });
-    await client.getTasks({ comp: 1 });
+    await client.getTasks({ comp: '0' });
+    await client.getTasks({ comp: '1' });
     expect(tasksComp0).toBe(1);
     expect(tasksComp1).toBe(1);
   });
@@ -870,7 +878,7 @@ describe('ToodledoClient', () => {
       })
     );
 
-    const client = new ToodledoClient(credentials, undefined, cache);
+    const client = new ToodledoClient(credentials, MOCK_STORE, cache);
     await client.getTasks();
     await client.getTasks(); // should hit the network again — cache disabled.
     expect(tasksCount).toBe(2);
