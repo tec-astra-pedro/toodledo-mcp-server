@@ -33,10 +33,28 @@ export class ResponseCache {
   readonly ttlMs: number;
   private readonly now: () => number;
   private readonly entries = new Map<string, CacheEntry>();
+  /** Generation counter — incremented on every mutation so callers can detect concurrent writes. */
+  generation = 0;
 
   constructor(options: CacheOptions = {}) {
-    const envTtl = process.env.TOODLEDO_CACHE_TTL;
-    this.ttlMs = options.ttlMs ?? (envTtl !== undefined ? Number(envTtl) * 1000 : 60_000);
+    // Explicit caller intent wins over env — tests that opt into caching by
+    // passing `{ ttlMs }` must not be overridden by a global test-time disable.
+    const explicitTtl = options.ttlMs ?? process.env.TOODLEDO_CACHE_TTL;
+    let ttlMs: number;
+    if (explicitTtl !== undefined) {
+      const parsed = typeof explicitTtl === 'number' ? explicitTtl : Number(explicitTtl);
+      if (!Number.isFinite(parsed)) {
+        console.error(
+          `Warning: cache TTL is not a valid finite number ("${String(explicitTtl)}"); falling back to default 60s.`
+        );
+        ttlMs = 60_000;
+      } else {
+        ttlMs = parsed * (typeof explicitTtl === 'number' ? 1 : 1000); // env value is seconds, options.ttlMs is ms.
+      }
+    } else {
+      ttlMs = 60_000;
+    }
+    this.ttlMs = ttlMs;
     this.now = options.now ?? Date.now;
   }
 
@@ -51,9 +69,10 @@ export class ResponseCache {
    * differing param value gets its own.
    */
   static key(url: string, params?: Record<string, any>): string {
-    const canonical = params
-      ? JSON.stringify(Object.keys(params).sort().map((k) => [k, params[k]]))
-      : '';
+    if (!params) return `${url}|`;
+    const canonical = JSON.stringify(
+      Object.keys(params).sort().map((k) => [k, String(params[k])])
+    );
     return `${url}|${canonical}`;
   }
 
@@ -74,6 +93,7 @@ export class ResponseCache {
 
   set(key: string, data: any, validators: Record<string, number> = {}): void {
     this.entries.set(key, { data, cachedAt: this.now(), validators });
+    this.generation++;
   }
 
   /** Re-stamp a validated entry as fresh without refetching its data. */
@@ -83,16 +103,21 @@ export class ResponseCache {
 
   delete(key: string): void {
     this.entries.delete(key);
+    this.generation++;
   }
 
   /** Drop every entry whose key starts with `urlPrefix` (e.g. '/tasks/'). */
   invalidatePrefix(urlPrefix: string): void {
-    for (const key of this.entries.keys()) {
-      if (key.startsWith(urlPrefix)) this.entries.delete(key);
+    for (const key of Array.from(this.entries.keys())) {
+      if (key.startsWith(urlPrefix)) {
+        this.entries.delete(key);
+        this.generation++;
+      }
     }
   }
 
   clear(): void {
     this.entries.clear();
+    this.generation++;
   }
 }
