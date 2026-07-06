@@ -200,38 +200,18 @@ export class ToodledoClient {
 
   async getAccountInfo(): Promise<any> {
     const key = ResponseCache.key('/account/get.php');
-
-    if (!this.cache.enabled) {
-      // Cache disabled — fetch directly without caching.
-      const data = await this.request<any>({ method: 'GET', url: '/account/get.php' });
-      ToodledoClient.checkItem(data);
-      return data;
+    if (this.cache.enabled) {
+      const fresh = this.cache.getFresh(key, Math.min(ACCOUNT_INFO_MAX_AGE_MS, this.cache.ttlMs));
+      if (fresh) return fresh.data;
     }
-
-    // Cold miss: per ADR item 8, do NOT call /account/get.php up-front. Instead
-    // fetch collection data directly so cachedGet stamps an empty-validators entry;
-    // /account/get.php is incurred later only on stale hits. ADR item 8 optimization.
-    if (!this.cache.get(key)) {
-      return await this.request<any>({ method: 'GET', url: '/account/get.php' });
-    }
-
-    // Warm cache — either serve fresh data or revalidate stale.
     const gen = this.cache.generation;
-    const existingFresh = this.cache.getFresh(key, Math.min(ACCOUNT_INFO_MAX_AGE_MS, this.cache.ttlMs));
-    if (existingFresh) {
-      // Already fresh — serve without fetch. ADR item 8: avoid double cost.
-      return this.cache.get(key)!.data;
-    }
-
-    // Stale entry: fetch fresh account info for validation. cachedGet will compare stored vs current validators.
     const data = await this.request<any>({ method: 'GET', url: '/account/get.php' });
     ToodledoClient.checkItem(data);
-    if (this.cache.generation === gen) {
+    if (this.cache.enabled && this.cache.generation === gen) {
       this.cache.set(key, data);
     }
     return data;
   }
-
 
   /**
    * Read path with caching + validation: serves cached data when fresh, or

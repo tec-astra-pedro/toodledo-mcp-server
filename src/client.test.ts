@@ -989,6 +989,54 @@ describe('ToodledoClient', () => {
     expect(tasksCount).toBe(2);
   });
 
+  it('getAccountInfo caches its snapshot — two stale reads within 30s call /account/get.php once', async () => {
+    // Defect A regression: getAccountInfo must cache its snapshot so bursts of
+    // validations cost at most 2 calls/minute. Two stale reads (tasks + notes)
+    // within the 30s account-snapshot window should hit /account/get.php only once.
+    let tasksCount = 0;
+    let notesCount = 0;
+    let accountCount = 0;
+    let now = 0;
+
+    server.use(
+      TOKEN_HANDLER,
+      http.get('https://api.toodledo.com/3/tasks/get.php', () => {
+        tasksCount++;
+        return HttpResponse.json([{ id: 1, title: 'Task' }]);
+      }),
+      http.get('https://api.toodledo.com/3/notes/get.php', () => {
+        notesCount++;
+        return HttpResponse.json([{ id: 1, title: 'Note' }]);
+      }),
+      http.get('https://api.toodledo.com/3/account/get.php', () => {
+        accountCount++;
+        return accountResponse({ lastedit_task: 10, lastdelete_task: 5 });
+      })
+    );
+
+    const cache = new ResponseCache({ ttlMs: 5_000, now: () => now });
+    const client = new ToodledoClient(credentials, MOCK_STORE, cache);
+
+    // First call: cold miss → stamps with empty validators.
+    await client.getTasks();
+
+    // Advance past trust window — entry is stale.
+    now = 6_000;
+
+    // Second call: stale hit → triggers /account/get.php for validation.
+    await client.getTasks();
+    expect(accountCount).toBe(1);
+
+    // Third call (notes): also stale, but account snapshot is still fresh (<30s).
+    // Should NOT call /account/get.php again — getAccountInfo cached its snapshot.
+    await client.getNotes();
+    expect(accountCount).toBe(1); // still 1 — snapshot was reused
+
+    // Verify both collections were fetched.
+    expect(tasksCount).toBe(2); // cold miss + stale refetch
+    expect(notesCount).toBe(1); // stale refetch only
+  });
+
   it('distinct params {comp: "0"} and {comp: 0} share a cache entry', async () => {
     // ADR item 9: key() normalizes so numeric and string values that compare
     // equal after String() share an entry.
