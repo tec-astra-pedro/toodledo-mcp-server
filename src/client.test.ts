@@ -1062,6 +1062,40 @@ describe('ToodledoClient', () => {
     expect(tasksCount).toBe(1); // cache hit, no second network call
   });
 
+  it('a write during an in-flight cold read must not poison the cache', async () => {
+    // Defect A regression (TOCTOU): a write that invalidates while a cold read
+    // is in flight must not let the held read cache pre-write data. The next
+    // getTasks() must refetch, proving the generation guard worked.
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    let tasksCount = 0;
+
+    server.use(
+      TOKEN_HANDLER,
+      http.get('https://api.toodledo.com/3/tasks/get.php', async () => {
+        tasksCount++;
+        if (tasksCount === 1) await gate; // hold the first fetch in flight
+        return HttpResponse.json([{ id: 1, title: 'Pre-write' }]);
+      }),
+      http.post('https://api.toodledo.com/3/tasks/add.php', () => {
+        return HttpResponse.json([{ id: 2, title: 'New' }]);
+      })
+    );
+
+    const cache = new ResponseCache({ ttlMs: 5_000 });
+    const client = new ToodledoClient(credentials, MOCK_STORE, cache);
+
+    const readP = client.getTasks(); // cold read, held at the gate
+    await client.addTask({ title: 'New' }); // invalidates /tasks/ mid-flight
+    release();
+    await readP;
+
+    // If the guard works, the held read did NOT cache its pre-write result,
+    // so this call fetches again instead of serving stale data.
+    await client.getTasks();
+    expect(tasksCount).toBe(2);
+  });
+
   it('TOODLEDO_CACHE_TTL=0 (or ttlMs=0) disables caching — every read hits the network', async () => {
     let tasksCount = 0;
     const cache = new ResponseCache({ ttlMs: 0 }); // disabled.
