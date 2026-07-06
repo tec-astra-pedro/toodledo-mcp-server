@@ -58,7 +58,7 @@ export class ResponseCache {
     this.now = options.now ?? Date.now;
   }
 
-  /** True iff the cache has been invalidated since it was constructed or last cleared. */
+  /** Invalidation counter — incremented on delete/invalidatePrefix/clear, NOT on set(). Used to detect writes concurrent with a fetch. */
   get generation(): number {
     return this._generation;
   }

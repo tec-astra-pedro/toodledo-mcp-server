@@ -225,8 +225,7 @@ export class ToodledoClient {
     const urlPrefix = this.deriveUrlPrefix(url);
     if (!urlPrefix) return this.request<T>({ method: 'GET', url, params });
 
-    // Cache disabled → direct request. ADR item 14: this is the only disabled gate;
-    // the later `this.cache.enabled &&` guard on cache.set was redundant and has been removed.
+    // Cache disabled → direct request.
     if (!this.cache.enabled) return this.request<T>({ method: 'GET', url, params });
 
     const validators = VALIDATORS_BY_URL[urlPrefix];
@@ -235,7 +234,7 @@ export class ToodledoClient {
     const existing = this.cache.get(key);
 
     // Fresh entry within trust window → serve without network I/O. No account
-    // or collection call needed. ADR item 8: avoid double cost on cold/warm path.
+    // or collection call needed.
     if (existing) {
       const fresh = this.cache.getFresh(key);
       if (fresh) return fresh.data;
@@ -243,7 +242,7 @@ export class ToodledoClient {
 
     // Cold miss (no cached entry at all) → fetch collection directly without
     // /account/get.php. Stamp with empty validators; subsequent stale hits will
-    // then call /account/get.php for real validator comparison. ADR item 8.
+    // then call /account/get.php for real validator comparison.
     if (!existing) {
       const gen = this.cache.generation;
       const data = await this.request<T>({ method: 'GET', url, params });
@@ -255,7 +254,7 @@ export class ToodledoClient {
     }
 
     // Stale hit (cached entry exists but past trust window) → need /account/get.php
-    // to get current validators for comparison. ADR item 8: only incur this cost
+    // to get current validators for comparison. Only incur this cost
     // when we have something to validate against.
     let accountInfo: any;
     try {
@@ -271,7 +270,7 @@ export class ToodledoClient {
     }, {});
 
     // Any undefined validator → mismatch. Skip cache.set to avoid stamping a
-    // degraded entry that would revalidate forever against an empty snapshot. ADR item 6.
+    // degraded entry that would revalidate forever against an empty snapshot.
     if (validators.some((v) => currentValidators[v] === undefined)) {
       const data = await this.request<T>({ method: 'GET', url, params });
       ToodledoClient.checkItem(data);
@@ -284,9 +283,9 @@ export class ToodledoClient {
       return existing.data;
     }
 
-    // Validators mismatched (external change) → refetch collection. ADR item 6:
-    // skip cache.set when any captured validator is undefined (handled above);
-    // only stamp with fresh validators on successful revalidation. ADR item 15.
+    // Validators mismatched (external change) → refetch collection. Skip
+    // cache.set when any captured validator is undefined (handled above);
+    // only stamp with fresh validators on successful revalidation.
     const gen = this.cache.generation;
     const data = await this.request<T>({ method: 'GET', url, params });
 
