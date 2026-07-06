@@ -19,12 +19,14 @@ import type {
  * `lastdelete_*` timestamps returned by `/account/get.php`. Used both to
  * validate cached collections against drift and to stamp fresh entries.
  */
-const VALIDATORS_BY_URL: Record<string, string[]> = {
+const VALIDATORS_BY_URL = {
   '/tasks/': ['lastedit_task', 'lastdelete_task'],
   '/notes/': ['lastedit_note', 'lastdelete_note'],
   '/lists/': ['lastedit_list'],
   '/folders/': ['lastedit_folder'],
-};
+} as const;
+
+type ValidatorPrefix = keyof typeof VALIDATORS_BY_URL;
 
 /** URL prefixes that also invalidate tasks and notes on write. */
 const CROSSTYPE_INVALIDATION_PREFIXES = ['/lists/', '/folders/'];
@@ -195,30 +197,41 @@ export class ToodledoClient {
    * validations cost at most 2 calls/minute. Not exposed as an MCP tool —
    * internal only.
    */
+
   async getAccountInfo(): Promise<any> {
     const key = ResponseCache.key('/account/get.php');
-    if (this.cache.enabled) {
-      const fresh = this.cache.getFresh(key, Math.min(ACCOUNT_INFO_MAX_AGE_MS, this.cache.ttlMs));
-      if (fresh) return fresh.data;
-    } else {
+
+    if (!this.cache.enabled) {
       // Cache disabled — fetch directly without caching.
       const data = await this.request<any>({ method: 'GET', url: '/account/get.php' });
       ToodledoClient.checkItem(data);
       return data;
     }
 
-    // Guard against TOCTOU: capture generation before fetch so a concurrent write doesn't clobber our stamp.
+    // Cold miss: per ADR item 8, do NOT call /account/get.php up-front. Instead
+    // fetch collection data directly so cachedGet stamps an empty-validators entry;
+    // /account/get.php is incurred later only on stale hits. ADR item 8 optimization.
+    if (!this.cache.get(key)) {
+      return await this.request<any>({ method: 'GET', url: '/account/get.php' });
+    }
+
+    // Warm cache — either serve fresh data or revalidate stale.
     const gen = this.cache.generation;
+    const existingFresh = this.cache.getFresh(key, Math.min(ACCOUNT_INFO_MAX_AGE_MS, this.cache.ttlMs));
+    if (existingFresh) {
+      // Already fresh — serve without fetch. ADR item 8: avoid double cost.
+      return this.cache.get(key)!.data;
+    }
+
+    // Stale entry: fetch fresh account info for validation. cachedGet will compare stored vs current validators.
     const data = await this.request<any>({ method: 'GET', url: '/account/get.php' });
-
     ToodledoClient.checkItem(data);
-
     if (this.cache.generation === gen) {
-      // Account snapshot has no collection validators — stamp an empty record.
       this.cache.set(key, data);
     }
     return data;
   }
+
 
   /**
    * Read path with caching + validation: serves cached data when fresh, or
@@ -232,26 +245,42 @@ export class ToodledoClient {
     const urlPrefix = this.deriveUrlPrefix(url);
     if (!urlPrefix) return this.request<T>({ method: 'GET', url, params });
 
-    const validators = VALIDATORS_BY_URL[urlPrefix];
-    if (!validators || validators.length === 0) return this.request<T>({ method: 'GET', url, params });
-
-    const key = ResponseCache.key(url, params);
-
-    // Cache disabled → direct request. The early-return above handles the
-    // no-validators case; the enabled-check here is redundant but kept for clarity.
+    // Cache disabled → direct request. ADR item 14: this is the only disabled gate;
+    // the later `this.cache.enabled &&` guard on cache.set was redundant and has been removed.
     if (!this.cache.enabled) return this.request<T>({ method: 'GET', url, params });
 
-    // Trust window hit → serve without network I/O.
-    const fresh = this.cache.getFresh(key);
-    if (fresh) return fresh.data;
+    const validators = VALIDATORS_BY_URL[urlPrefix];
+    const key = ResponseCache.key(url, params);
 
-    // Stale or miss → validation path.
+    const existing = this.cache.get(key);
+
+    // Fresh entry within trust window → serve without network I/O. No account
+    // or collection call needed. ADR item 8: avoid double cost on cold/warm path.
+    if (existing) {
+      const fresh = this.cache.getFresh(key);
+      if (fresh) return fresh.data;
+    }
+
+    // Cold miss (no cached entry at all) → fetch collection directly without
+    // /account/get.php. Stamp with empty validators; subsequent stale hits will
+    // then call /account/get.php for real validator comparison. ADR item 8.
+    if (!existing) {
+      const data = await this.request<T>({ method: 'GET', url, params });
+      ToodledoClient.checkItem(data);
+      const gen = this.cache.generation;
+      if (this.cache.generation === gen) {
+        this.cache.set(key, data, {});
+      }
+      return data;
+    }
+
+    // Stale hit (cached entry exists but past trust window) → need /account/get.php
+    // to get current validators for comparison. ADR item 8: only incur this cost
+    // when we have something to validate against.
     let accountInfo: any;
     try {
       accountInfo = await this.getAccountInfo();
     } catch (err: any) {
-      // If the account call fails, fall back to a direct fetch so callers don't
-      // see a hard failure just because cache validation broke.
       console.warn(`ResponseCache: getAccountInfo() failed (${err.message}); bypassing for this read`);
       return this.request<T>({ method: 'GET', url, params });
     }
@@ -261,41 +290,47 @@ export class ToodledoClient {
       return acc;
     }, {});
 
-    // Stale hit with matching validators → re-stamp as fresh and serve.
-    const stale = this.cache.get(key);
-    if (stale && this.validatorsMatch(stale.validators, currentValidators)) {
-      this.cache.refresh(stale);
-      return stale.data;
+    // Any undefined validator → mismatch. Skip cache.set to avoid stamping a
+    // degraded entry that would revalidate forever against an empty snapshot. ADR item 6.
+    if (validators.some((v) => currentValidators[v] === undefined)) {
+      const data = await this.request<T>({ method: 'GET', url, params });
+      ToodledoClient.checkItem(data);
+      return data;
     }
 
+    // Stale hit with matching validators → re-stamp as fresh and serve.
+    if (this.validatorsMatch(existing.validators, currentValidators)) {
+      this.cache.refresh(existing);
+      return existing.data;
+    }
+
+    // Validators mismatched (external change) → refetch collection. ADR item 6:
+    // skip cache.set when any captured validator is undefined (handled above);
+    // only stamp with fresh validators on successful revalidation. ADR item 15.
     const gen = this.cache.generation;
     const data = await this.request<T>({ method: 'GET', url, params });
 
     // Reject inline errors before caching.
     ToodledoClient.checkItem(data);
 
-    // Guard against TOCTOU: only stamp if no concurrent write occurred.
-    if (this.cache.enabled && this.cache.generation === gen) {
+    if (this.cache.generation === gen) {
       this.cache.set(key, data, currentValidators);
     }
     return data;
   }
 
-  /** True iff every stored validator matches the corresponding current value. */
+  /** True iff every stored validator matches the corresponding current value. An entry stamped with empty validators (cold miss) is treated as needing full revalidation. */
   private validatorsMatch(stored: Record<string, number>, current: Record<string, number>): boolean {
-    for (const key of Object.keys(stored)) {
-      if ((stored as any)[key] !== (current as any)[key]) return false;
-    }
-    return true;
+    if (Object.keys(stored).length === 0 && Object.keys(current).length > 0) return false;
+    return Object.keys(stored).every(
+      (k) => stored[k] !== undefined && stored[k] === current[k]
+    );
   }
 
-  /**
-   * Derive the collection URL prefix from a full Toodledo API path by matching
-   * against VALIDATORS_BY_URL keys. Returns undefined if no match found.
-   */
-  private deriveUrlPrefix(url: string): keyof typeof VALIDATORS_BY_URL | null {
+  /** Derive the collection URL prefix from a full Toodledo API path by matching against VALIDATORS_BY_URL keys. Returns null if no match found. */
+  private deriveUrlPrefix(url: string): ValidatorPrefix | null {
     for (const prefix of Object.keys(VALIDATORS_BY_URL)) {
-      if (url.startsWith(prefix)) return prefix as keyof typeof VALIDATORS_BY_URL;
+      if (url.startsWith(prefix)) return prefix as ValidatorPrefix;
     }
     return null;
   }
@@ -306,7 +341,7 @@ export class ToodledoClient {
    * tasks and notes (deletion unassigns server-side). Always drops the cached
    * account snapshot since its lastedit values just changed.
    */
-  private invalidateOnWrite(urlPrefix: keyof typeof VALIDATORS_BY_URL): void {
+  private invalidateOnWrite(urlPrefix: ValidatorPrefix): void {
     if (!this.cache.enabled) return;
     // Drop the account info first — its validator values just changed.
     this.cache.delete(ResponseCache.key('/account/get.php'));
@@ -350,6 +385,7 @@ export class ToodledoClient {
    * (`comp` 0/1/-1, `after`/`before` timestamps, `id`, `fields`,
    * `start`/`num`). Note: Toodledo prepends a summary object
    * (`{num, total}`) to the returned array.
+   * NOTE: The returned data is shared with internal cache state — do not mutate it.
    */
   async getTasks(params?: any): Promise<ToodledoTask[]> {
     return this.cachedGet<ToodledoTask[]>('/tasks/get.php', params);
@@ -390,7 +426,7 @@ export class ToodledoClient {
 
   // --- Notes ---
 
-  /** Fetch notes. `params` maps to notes/get.php (`after`/`before`, `id`, `start`/`num`). */
+  /** Fetch notes. `params` maps to notes/get.php (`after`/`before`, `id`, `start`/`num`). NOTE: The returned data is shared with internal cache state — do not mutate it. */
   async getNotes(params?: any): Promise<ToodledoNote[]> {
     return this.cachedGet<ToodledoNote[]>('/notes/get.php', params);
   }
@@ -430,7 +466,7 @@ export class ToodledoClient {
 
   // --- Lists ---
 
-  /** Fetch lists. `params` maps to lists/get.php (`after`/`before`, `id`, `start`/`num`). */
+  /** Fetch lists. `params` maps to lists/get.php (`after`/`before`, `id`, `start`/`num`). NOTE: The returned data is shared with internal cache state — do not mutate it. */
   async getLists(params?: any): Promise<ToodledoList[]> {
     // Toodledo returns a literal null body when the account has no lists.
     const res = await this.cachedGet<ToodledoList[] | null>('/lists/get.php', params);
@@ -459,8 +495,9 @@ export class ToodledoClient {
     // yield Toodledo error 914 when an external edit occurred within the trust window.
     let version = (data as any).version;
     if (version === undefined) {
-      const existing: ToodledoList[] = await this.request<any>({ method: 'GET', url: '/lists/get.php', params: { id } });
-      version = existing.find((l: any) => l.id === id)?.version;
+      const existing: ToodledoList[] | null = await this.request<any>({ method: 'GET', url: '/lists/get.php', params: { id } });
+      const normalized = Array.isArray(existing) ? existing : [];
+      version = normalized.find((l: any) => l.id === id)?.version;
       if (version === undefined) {
         throw new Error(`List ${id} not found — cannot determine its version for editing.`);
       }
@@ -487,7 +524,7 @@ export class ToodledoClient {
 
   // --- Folders ---
 
-  /** Fetch all folders (folders/get.php takes no filter parameters). */
+  /** Fetch all folders (folders/get.php takes no filter parameters). NOTE: The returned data is shared with internal cache state — do not mutate it. */
   async getFolders(params?: any): Promise<ToodledoFolder[]> {
     return this.cachedGet<ToodledoFolder[]>('/folders/get.php', params);
   }

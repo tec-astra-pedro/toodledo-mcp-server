@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { setupServer } from 'msw/node';
 import { http, HttpResponse } from 'msw';
 import * as path from 'path';
@@ -16,6 +16,12 @@ afterAll(() => server.close());
 // Mock token store: used by cache-integration tests to avoid touching the real token file.
 // read() returns null so the client relies on credentials.refreshToken; write() is a no-op.
 const MOCK_STORE: TokenStore = { read() { return Promise.resolve(null); }, write() {} };
+
+// Shared msw handler for the OAuth token endpoint. All cache-integration tests
+// use this so they only need to set up collection + account mocks. ADR item 17.
+const TOKEN_HANDLER = http.post('https://api.toodledo.com/3/account/token.php', () => {
+  return HttpResponse.json({ access_token: 'a', refresh_token: 'r', expires_in: 3600 });
+});
 
 // Helper: build an account/get.php response with configurable validator stamps.
 function accountResponse(stamps: Record<string, number> = {}) {
@@ -583,6 +589,31 @@ describe('ToodledoClient', () => {
     );
   });
 
+  it('editList handles null body from lists/get.php gracefully (not TypeError)', async () => {
+    // Toodledo returns literal null body when account has no lists.
+    // The ?? [] guard must prevent a TypeError and surface "not found" instead.
+    const mockStore: TokenStore = {
+      read() { return Promise.resolve('token'); },
+      write(_t: string) {},
+    };
+
+    server.use(
+      http.post('https://api.toodledo.com/3/account/token.php', () => {
+        return HttpResponse.json({ access_token: 'a', refresh_token: 'b', expires_in: 3600 });
+      }),
+      // Return null body (not empty array) to simulate Toodledo's behavior when no lists exist.
+      http.get('https://api.toodledo.com/3/lists/get.php', () => {
+        return new HttpResponse(null, { status: 200 });
+      })
+    );
+
+    const client = new ToodledoClient({ clientId: 'id', clientSecret: 'secret' }, mockStore);
+    // Must reject with "not found" message, NOT TypeError from calling .find on null.
+    await expect(client.editList('abc123', { title: 'X' })).rejects.toThrow(
+      /List abc123 not found/
+    );
+  });
+
   it('should prefer explicit credential refresh token over the store on construction', async () => {
     const readCalls: string[] = [];
     const mockStore: TokenStore = {
@@ -658,9 +689,7 @@ describe('ToodledoClient', () => {
     let accountCount = 0;
 
     server.use(
-      http.post('https://api.toodledo.com/3/account/token.php', () => {
-        return HttpResponse.json({ access_token: 'a', refresh_token: 'r', expires_in: 3600 });
-      }),
+      TOKEN_HANDLER,
       http.get('https://api.toodledo.com/3/tasks/get.php', () => {
         tasksCount++;
         return HttpResponse.json([{ id: 1, title: 'Task' }]);
@@ -682,23 +711,19 @@ describe('ToodledoClient', () => {
     expect(tasksCount).toBe(1);
   });
 
-  it('revalidates with account/get but does NOT refetch when validators match', async () => {
+  it('stale hit with empty stored validators refetches (no baseline to compare)', async () => {
     let tasksCount = 0;
     let accountCount = 0;
-    // Advance past the trust window on demand.
     let now = 0;
 
     server.use(
-      http.post('https://api.toodledo.com/3/account/token.php', () => {
-        return HttpResponse.json({ access_token: 'a', refresh_token: 'r', expires_in: 3600 });
-      }),
+      TOKEN_HANDLER,
       http.get('https://api.toodledo.com/3/tasks/get.php', () => {
         tasksCount++;
         return HttpResponse.json([{ id: 1, title: 'Task' }]);
       }),
       http.get('https://api.toodledo.com/3/account/get.php', () => {
         accountCount++;
-        // Stamps match what we stamped on the initial fetch — validator path should pass.
         return accountResponse({ lastedit_task: 10, lastdelete_task: 20 });
       })
     );
@@ -706,18 +731,62 @@ describe('ToodledoClient', () => {
     const cache = new ResponseCache({ ttlMs: 5_000, now: () => now });
     const client = new ToodledoClient(credentials, MOCK_STORE, cache);
 
-    // First call — stamps the entry with (lastedit_task=10, lastdelete_task=20).
+    // First call — cold miss stamps with empty validators (no account/get.php per ADR item 8).
     await client.getTasks();
     expect(tasksCount).toBe(1);
-    expect(accountCount).toBe(1);
+    expect(accountCount).toBe(0);
 
     // Advance past the trust window.
     now = 6_000;
 
-    // Second call — should hit /account/get.php but NOT refetch tasks/get because validators match.
+    // Second call — stale hit with empty stored validators.
+    // ADR item 6: empty stored validators don't match non-empty current validators → refetch.
     const result = await client.getTasks();
     expect(result[0].title).toBe('Task');
-    expect(tasksCount).toBe(1); // not re-fetched
+    expect(tasksCount).toBe(2); // re-fetched because stored={} doesn't match current={lastedit_task:10, lastdelete_task:20}
+    expect(accountCount).toBe(1); // account called for validation
+  });
+
+  it('stale hit with matching validators re-stamps and serves cached data', async () => {
+    let tasksCount = 0;
+    let accountCount = 0;
+    let now = 0;
+
+    server.use(
+      TOKEN_HANDLER,
+      http.get('https://api.toodledo.com/3/tasks/get.php', () => {
+        tasksCount++;
+        return HttpResponse.json([{ id: 1, title: 'Task' }]);
+      }),
+      http.get('https://api.toodledo.com/3/account/get.php', () => {
+        accountCount++;
+        return accountResponse({ lastedit_task: 10, lastdelete_task: 20 });
+      })
+    );
+
+    const cache = new ResponseCache({ ttlMs: 5_000, now: () => now });
+    const client = new ToodledoClient(credentials, MOCK_STORE, cache);
+
+    // First call — cold miss stamps with empty validators.
+    await client.getTasks();
+    expect(tasksCount).toBe(1);
+    expect(accountCount).toBe(0);
+
+    // Advance past the trust window.
+    now = 6_000;
+
+    // Second call — stale hit, empty stored validators mismatch → refetch and stamp with current validators.
+    await client.getTasks();
+    expect(tasksCount).toBe(2);
+    expect(accountCount).toBe(1);
+
+    // Advance past the trust window again.
+    now = 12_000;
+
+    // Third call — stale hit, stored validators now match current → re-stamp and serve cached.
+    const result = await client.getTasks();
+    expect(result[0].title).toBe('Task');
+    expect(tasksCount).toBe(2); // not re-fetched, served from cache
     expect(accountCount).toBe(2); // account called for validation
   });
 
@@ -726,9 +795,7 @@ describe('ToodledoClient', () => {
     let now = 0;
 
     server.use(
-      http.post('https://api.toodledo.com/3/account/token.php', () => {
-        return HttpResponse.json({ access_token: 'a', refresh_token: 'r', expires_in: 3600 });
-      }),
+      TOKEN_HANDLER,
       http.get('https://api.toodledo.com/3/tasks/get.php', () => {
         tasksCount++;
         // Second call returns updated data reflecting the deletion.
@@ -759,9 +826,7 @@ describe('ToodledoClient', () => {
     let accountCount = 0;
 
     server.use(
-      http.post('https://api.toodledo.com/3/account/token.php', () => {
-        return HttpResponse.json({ access_token: 'a', refresh_token: 'r', expires_in: 3600 });
-      }),
+      TOKEN_HANDLER,
       http.get('https://api.toodledo.com/3/tasks/get.php', () => {
         tasksCount++;
         // First call: pre-add snapshot. Second call (after add): includes the new task.
@@ -799,9 +864,7 @@ describe('ToodledoClient', () => {
     const folderId = 42;
 
     server.use(
-      http.post('https://api.toodledo.com/3/account/token.php', () => {
-        return HttpResponse.json({ access_token: 'a', refresh_token: 'r', expires_in: 3600 });
-      }),
+      TOKEN_HANDLER,
       http.get('https://api.toodledo.com/3/tasks/get.php', () => {
         tasksCount++;
         // Second call returns tasks without the deleted folder id.
@@ -832,9 +895,7 @@ describe('ToodledoClient', () => {
     let tasksComp1 = 0;
 
     server.use(
-      http.post('https://api.toodledo.com/3/account/token.php', () => {
-        return HttpResponse.json({ access_token: 'a', refresh_token: 'r', expires_in: 3600 });
-      }),
+      TOKEN_HANDLER,
       http.get('https://api.toodledo.com/3/account/get.php', () => {
         // No validator stamps — validatorsMatch({}, {}) returns true so stale hits refresh and serve.
         return HttpResponse.json({});
@@ -863,15 +924,103 @@ describe('ToodledoClient', () => {
     expect(tasksComp1).toBe(1);
   });
 
+  // --- New regression tests (defect fixes + ADR items) ---
+
+  it('cold miss does NOT call /account/get.php — only fetches collection', async () => {
+    // ADR item 8: cold miss (no cached entry) should skip /account/get.php
+    // and fetch the collection directly. This test verifies that behavior.
+    let tasksCount = 0;
+    let accountCount = 0;
+
+    server.use(
+      TOKEN_HANDLER,
+      http.get('https://api.toodledo.com/3/tasks/get.php', () => {
+        tasksCount++;
+        return HttpResponse.json([{ id: 1, title: 'Task' }]);
+      }),
+      http.get('https://api.toodledo.com/3/account/get.php', () => {
+        accountCount++;
+        return accountResponse({ lastedit_task: 10, lastdelete_task: 20 });
+      })
+    );
+
+    const cache = new ResponseCache({ ttlMs: 5_000 });
+    const client = new ToodledoClient(credentials, MOCK_STORE, cache);
+
+    // Cold miss: no cached entry yet. Should fetch tasks/get but NOT account/get.
+    await client.getTasks();
+    expect(tasksCount).toBe(1);
+    expect(accountCount).toBe(0); // /account/get.php NOT called on cold miss!
+  });
+
+  it('stale hit with undefined validators fetches collection without caching', async () => {
+    // ADR items 6 + 15: if /account/get.php returns incomplete data (some
+    // validators missing/undefined), the entry should be re-fetched from the
+    // collection but NOT re-stamped in cache (to avoid stamping a degraded entry).
+    let tasksCount = 0;
+    let now = 0;
+
+    server.use(
+      TOKEN_HANDLER,
+      http.get('https://api.toodledo.com/3/tasks/get.php', () => {
+        tasksCount++;
+        return HttpResponse.json([{ id: 1, title: 'Task' }]);
+      }),
+      http.get('https://api.toodledo.com/3/account/get.php', () => {
+        // Return partial validators (missing lastdelete_task) → undefined in currentValidators.
+        return accountResponse({ lastedit_task: 10 });
+      })
+    );
+
+    const cache = new ResponseCache({ ttlMs: 5_000, now: () => now });
+    const client = new ToodledoClient(credentials, MOCK_STORE, cache);
+
+    // First call: cold miss → stamps with empty validators.
+    await client.getTasks();
+
+    // Advance past trust window — entry is stale, no validator stamps in stored record.
+    now = 6_000;
+
+    // Second call: stale hit with empty stored validators.
+    // /account/get.php returns partial data → currentValidators has undefined → mismatch → refetch collection.
+    await client.getTasks();
+
+    // Should have called tasks/get twice (cold miss + stale hit refetch).
+    expect(tasksCount).toBe(2);
+  });
+
+  it('distinct params {comp: "0"} and {comp: 0} share a cache entry', async () => {
+    // ADR item 9: key() normalizes so numeric and string values that compare
+    // equal after String() share an entry.
+    let tasksCount = 0;
+
+    server.use(
+      TOKEN_HANDLER,
+      http.get('https://api.toodledo.com/3/tasks/get.php', () => {
+        tasksCount++;
+        return HttpResponse.json([{ id: 1, title: 'Task' }]);
+      })
+    );
+
+    const cache = new ResponseCache({ ttlMs: 5_000 });
+    const client = new ToodledoClient(credentials, MOCK_STORE, cache);
+
+    // First call with comp: '0'.
+    await client.getTasks({ comp: '0' });
+    expect(tasksCount).toBe(1);
+
+    // Second call with comp: 0 (numeric) — should hit cache (same key).
+    await client.getTasks({ comp: 0 });
+    expect(tasksCount).toBe(1); // cache hit, no second network call
+  });
+
   it('TOODLEDO_CACHE_TTL=0 (or ttlMs=0) disables caching — every read hits the network', async () => {
     let tasksCount = 0;
     const cache = new ResponseCache({ ttlMs: 0 }); // disabled.
     expect(cache.enabled).toBe(false);
 
     server.use(
-      http.post('https://api.toodledo.com/3/account/token.php', () => {
-        return HttpResponse.json({ access_token: 'a', refresh_token: 'r', expires_in: 3600 });
-      }),
+      TOKEN_HANDLER,
       http.get('https://api.toodledo.com/3/tasks/get.php', () => {
         tasksCount++;
         return HttpResponse.json([{ id: 1, title: 'Task' }]);
@@ -883,4 +1032,54 @@ describe('ToodledoClient', () => {
     await client.getTasks(); // should hit the network again — cache disabled.
     expect(tasksCount).toBe(2);
   });
+
+  it('TOODLEDO_CACHE_TTL=malformed warns and falls back to default (vi.stubEnv)', async () => {
+    // ADR item 10: malformed TTL values warn on stderr and fall back to 60s default.
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    vi.stubEnv('TOODLEDO_CACHE_TTL', 'not-a-number');
+
+    const cache = new ResponseCache();
+    expect(cache.ttlMs).toBe(60_000); // default 60s fallback
+
+    vi.unstubAllEnvs();
+    consoleSpy.mockRestore();
+  });
+
+  it('editList throws "not found" when lists/get.php returns null body (defect 1 regression)', async () => {
+    // ADR item 5 / defect 1: editList's internal version lookup bypasses cache,
+    // but the raw response can be null (Toodledo returns null when account has no lists).
+    // Without the ?? [] normalization, existing.find throws TypeError instead of "not found".
+    server.use(
+      TOKEN_HANDLER,
+      http.get('https://api.toodledo.com/3/lists/get.php', () => {
+        return new HttpResponse(null);
+      }),
+      http.post('https://api.toodledo.com/3/lists/edit.php', () => {
+        return HttpResponse.json({ id: 'list1', title: 'Updated' });
+      })
+    );
+
+    const cache = new ResponseCache({ ttlMs: 0 }); // disabled to bypass cache in editList
+    const client = new ToodledoClient(credentials, MOCK_STORE, cache);
+
+    await expect(client.editList('list1', { title: 'Updated' })).rejects.toThrow(
+      'List list1 not found — cannot determine its version for editing.'
+    );
+  });
+
+  it('generation guard: set() does NOT bump generation (defect 2)', async () => {
+    // ADR item 4 / defect 2: generation counter must only bump on invalidation, not on set().
+    const cache = new ResponseCache({ ttlMs: 5_000 });
+    const key = ResponseCache.key('/tasks/get.php');
+
+    const genBefore = cache.generation;
+    cache.set(key, [{ id: 1 }], {});
+    expect(cache.generation).toBe(genBefore); // generation unchanged after set()
+
+    // But invalidation should bump it.
+    cache.invalidatePrefix('/tasks/');
+    expect(cache.generation).toBe(genBefore + 1);
+  });
+
 });
