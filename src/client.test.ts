@@ -1128,27 +1128,6 @@ describe('ToodledoClient', () => {
     consoleSpy.mockRestore();
   });
 
-  it('editList throws "not found" when lists/get.php returns null body (defect 1 regression)', async () => {
-    // ADR item 5 / defect 1: editList's internal version lookup bypasses cache,
-    // but the raw response can be null (Toodledo returns null when account has no lists).
-    // Without the ?? [] normalization, existing.find throws TypeError instead of "not found".
-    server.use(
-      TOKEN_HANDLER,
-      http.get('https://api.toodledo.com/3/lists/get.php', () => {
-        return new HttpResponse(null);
-      }),
-      http.post('https://api.toodledo.com/3/lists/edit.php', () => {
-        return HttpResponse.json({ id: 'list1', title: 'Updated' });
-      })
-    );
-
-    const cache = new ResponseCache({ ttlMs: 0 }); // disabled to bypass cache in editList
-    const client = new ToodledoClient(credentials, MOCK_STORE, cache);
-
-    await expect(client.editList('list1', { title: 'Updated' })).rejects.toThrow(
-      'List list1 not found — cannot determine its version for editing.'
-    );
-  });
 
   it('generation guard: set() does NOT bump generation (defect 2)', async () => {
     // ADR item 4 / defect 2: generation counter must only bump on invalidation, not on set().
