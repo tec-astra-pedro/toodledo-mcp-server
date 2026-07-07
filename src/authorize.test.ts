@@ -25,6 +25,16 @@ describe('authorize (pure pieces)', () => {
       expect(parsed.searchParams.get('scope')).toBe('tasks write');
       expect(parsed.searchParams.get('redirect_uri')).toBe('http://127.0.0.1:9999/callback');
     });
+
+    it('should use the supplied redirectUri in the authorize URL', () => {
+      const url = buildAuthorizeUrl({
+        clientId: 'id',
+        state: 's',
+        redirectUri: 'http://example.com/cb',
+      });
+      const parsed = new URL(url);
+      expect(parsed.searchParams.get('redirect_uri')).toBe('http://example.com/cb');
+    });
   });
 
   describe('generateState', () => {

@@ -117,21 +117,22 @@ export async function runAuthorize(): Promise<void> {
   // TOODLEDO_TOKEN_PATH (the store reads the env var itself).
   const tokenStore = createFileTokenStore();
 
+  // Resolved once so the authorize URL, listener hostname/port, and token exchange all agree.
+  const redirectUri = process.env.TOODLEDO_REDIRECT_URI ?? DEFAULT_REDIRECT_URI;
+  const parsedRedirect = new URL(redirectUri);
+  const port = Number(parsedRedirect.port) || 8585;
+
   const state = generateState();
 
-  const authorizeUrl = buildAuthorizeUrl({ clientId, scope: process.env.TOODLEDO_SCOPE, state });
+  const authorizeUrl = buildAuthorizeUrl({ clientId, scope: process.env.TOODLEDO_SCOPE, redirectUri, state });
 
   console.log('Opening browser for Toodledo authorization...');
   const opened = await openBrowser(authorizeUrl);
   if (!opened) {
     console.error(`\nCould not auto-open browser. Please visit this URL manually:\n${authorizeUrl}\n`);
   } else {
-    console.log('Waiting for callback on port 8585...\n');
+    console.log(`Waiting for callback on ${redirectUri}...\n`);
   }
-
-  // Use Node's built-in http module to listen for the OAuth callback.
-  const parsedRedirect = new URL(process.env.TOODLEDO_REDIRECT_URI ?? DEFAULT_REDIRECT_URI);
-  const port = Number(parsedRedirect.port) || 8585;
 
   await new Promise<void>((resolve, reject) => {
     const server = http.createServer(async (req, res) => {
@@ -203,7 +204,7 @@ export async function runAuthorize(): Promise<void> {
       }
     });
 
-    server.listen(port, () => {});
+    server.listen(port, parsedRedirect.hostname || '127.0.0.1', () => {});
     server.on('error', (err) => {
       if ((err as NodeJS.ErrnoException).code === 'EADDRINUSE') {
         console.error(
