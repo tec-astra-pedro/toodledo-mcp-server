@@ -1038,6 +1038,35 @@ describe('ToodledoClient', () => {
     expect(notesCount).toBe(2);
   });
 
+  it('inline HTTP-200 error on GET throws and is not cached', async () => {
+    // ADR item 7: an inline error body (errorCode present) on a 200 GET must be
+    // thrown, never stored. A subsequent call must hit the network again — proving
+    // the error was not cached as data.
+    let tasksCount = 0;
+
+    server.use(
+      TOKEN_HANDLER,
+      http.get('https://api.toodledo.com/3/tasks/get.php', () => {
+        tasksCount++;
+        if (tasksCount === 1) {
+          return HttpResponse.json({ errorCode: 2, errorDesc: 'Server error' });
+        }
+        return HttpResponse.json([{ id: 1, title: 'Task' }]);
+      })
+    );
+
+    const cache = new ResponseCache({ ttlMs: 5_000 });
+    const client = new ToodledoClient(credentials, MOCK_STORE, cache);
+
+    // First call: inline error → must reject.
+    await expect(client.getTasks()).rejects.toThrow(/Toodledo error 2/);
+
+    // Second call: must succeed AND hit the network (handler called twice).
+    const data = await client.getTasks();
+    expect(tasksCount).toBe(2);
+    expect(data).toEqual([{ id: 1, title: 'Task' }]);
+  });
+
   it('distinct params {comp: "0"} and {comp: 0} share a cache entry', async () => {
     // ADR item 9: key() normalizes so numeric and string values that compare
     // equal after String() share an entry.
