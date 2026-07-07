@@ -924,6 +924,41 @@ describe('ToodledoClient', () => {
     expect(tasksComp1).toBe(1);
   });
 
+  it('falls back to a direct fetch when getAccountInfo fails during stale revalidation', async () => {
+    // When /account/get.php is unreachable during a stale-hit revalidation,
+    // cachedGet must not throw — it falls back to a direct collection fetch
+    // so the caller still gets fresh data.
+    let tasksCount = 0;
+    let now = 0;
+
+    server.use(
+      TOKEN_HANDLER,
+      http.get('https://api.toodledo.com/3/tasks/get.php', () => {
+        tasksCount++;
+        return HttpResponse.json([{ id: 1, title: 'Task' }]);
+      }),
+      http.get('https://api.toodledo.com/3/account/get.php', () => {
+        return new HttpResponse(null, { status: 500 });
+      })
+    );
+
+    const cache = new ResponseCache({ ttlMs: 5_000, now: () => now });
+    const client = new ToodledoClient(credentials, MOCK_STORE, cache);
+
+    // Cold miss: stamps an entry, no account call yet.
+    await client.getTasks();
+    expect(tasksCount).toBe(1);
+
+    // Advance past the trust window so the next read is stale and must
+    // revalidate — which requires an account/get.php call that will fail.
+    now = 6_000;
+
+    // Must NOT throw; must fall back to a direct collection fetch.
+    const result = await client.getTasks();
+    expect(result[0].title).toBe('Task');
+    expect(tasksCount).toBe(2);
+  });
+
   // --- New regression tests (defect fixes + ADR items) ---
 
   it('cold miss does NOT call /account/get.php — only fetches collection', async () => {
