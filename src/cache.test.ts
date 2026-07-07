@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { ResponseCache } from './cache.js';
 
 describe('ResponseCache', () => {
@@ -84,13 +84,11 @@ describe('ResponseCache', () => {
   });
 
   it('respects TTL=0 (cache.disabled)', () => {
-    // Constructed with ttlMs=0 → enabled=false.
     const cache = new ResponseCache({ ttlMs: 0 });
     expect(cache.enabled).toBe(false);
+    // Disabled cache should never serve entries, even immediately after set.
     cache.set('k', 'v');
-    // getFresh with maxAgeMs=0 should never return anything (age >= 0 is not <= 0 unless age==0 exactly, but the semantics are "disabled").
-    // Actually getFresh(key, 0) returns entry if age <= 0 — so at exact t=cachedAt it's fresh.
-    // But enabled=false is the caller's signal to bypass entirely.
+    expect(cache.getFresh('k')).toBeUndefined();
   });
 
   it('honors an injected clock', () => {
@@ -103,31 +101,18 @@ describe('ResponseCache', () => {
     expect(cache.getFresh('k')).toBeUndefined();
   });
 
-  it('uses env TOODLEDO_CACHE_TTL (seconds) when no options.ttlMs given', async () => {
-    const prev = process.env.TOODLEDO_CACHE_TTL;
-    process.env.TOODLEDO_CACHE_TTL = '2';
-    try {
-      // Re-import is not possible, but we can construct a fresh cache. The
-      // constructor reads the env at instantiation time.
-      const cache = new ResponseCache();
-      expect(cache.ttlMs).toBe(2000);
-    } finally {
-      if (prev === undefined) delete process.env.TOODLEDO_CACHE_TTL;
-      else process.env.TOODLEDO_CACHE_TTL = prev;
-    }
+  it('uses env TOODLEDO_CACHE_TTL (seconds) when no options.ttlMs given', () => {
+    // ADR item 17: use vi.stubEnv for env tests.
+    vi.stubEnv('TOODLEDO_CACHE_TTL', '2');
+    const cache = new ResponseCache();
+    expect(cache.ttlMs).toBe(2000);
   });
 
   it('options.ttlMs takes precedence over env TOODLEDO_CACHE_TTL', () => {
-    const prev = process.env.TOODLEDO_CACHE_TTL;
-    process.env.TOODLEDO_CACHE_TTL = '2';
-    try {
-      // ttlMs=0 wins → disabled.
-      const cache = new ResponseCache({ ttlMs: 0 });
-      expect(cache.enabled).toBe(false);
-    } finally {
-      if (prev === undefined) delete process.env.TOODLEDO_CACHE_TTL;
-      else process.env.TOODLEDO_CACHE_TTL = prev;
-    }
+    vi.stubEnv('TOODLEDO_CACHE_TTL', '2');
+    // ttlMs=0 wins → disabled.
+    const cache = new ResponseCache({ ttlMs: 0 });
+    expect(cache.enabled).toBe(false);
   });
 
   it('canonicalizes keys by sorting params', () => {
@@ -140,5 +125,81 @@ describe('ResponseCache', () => {
     const a = ResponseCache.key('/tasks/get.php', { comp: 0 });
     const b = ResponseCache.key('/tasks/get.php', { comp: 1 });
     expect(a).not.toBe(b);
+  });
+
+  // --- Key normalization tests (ADR item 9) ---
+
+  it('drops null/undefined param values so {} === omitted === {comp: null}', () => {
+    const a = ResponseCache.key('/tasks/get.php'); // omitted params
+    const b = ResponseCache.key('/tasks/get.php', {}); // empty object
+    const c = ResponseCache.key('/tasks/get.php', { comp: null }); // null value dropped
+    expect(a).toBe(b);
+    expect(b).toBe(c);
+  });
+
+  it('stringifies primitives so {id: 5} === {id: "5"} share an entry', () => {
+    const a = ResponseCache.key('/tasks/get.php', { id: 5 });
+    const b = ResponseCache.key('/tasks/get.php', { id: '5' });
+    expect(a).toBe(b);
+  });
+
+  it('JSON-stringifies nested objects so {a:{x:1}} !== {a:{x:2}}', () => {
+    const a = ResponseCache.key('/tasks/get.php', { a: { x: 1 } });
+    const b = ResponseCache.key('/tasks/get.php', { a: { x: 2 } });
+    expect(a).not.toBe(b);
+    // And distinct from primitives.
+    const c = ResponseCache.key('/tasks/get.php', { id: '5' });
+    expect(a).not.toBe(c);
+  });
+
+  // --- Generation counter / TOCTOU tests ---
+
+  it('set() does NOT bump generation (concurrent reads both cache)', () => {
+    const { cache } = make();
+    const genBefore = cache.generation;
+    cache.set('a', '1');
+    cache.set('b', '2');
+    // Neither set should have bumped the counter.
+    expect(cache.generation).toBe(genBefore);
+  });
+
+  it('invalidatePrefix bumps generation exactly once per call, not per deleted key', () => {
+    const { cache } = make();
+    cache.set('/tasks/a', '1');
+    cache.set('/tasks/b', '2');
+    cache.set('/tasks/c', '3');
+    const genBefore = cache.generation;
+    cache.invalidatePrefix('/tasks/');
+    // Only one bump, not three.
+    expect(cache.generation).toBe(genBefore + 1);
+    // All entries gone.
+    expect(cache.getFresh('/tasks/a')).toBeUndefined();
+    expect(cache.getFresh('/tasks/b')).toBeUndefined();
+    expect(cache.getFresh('/tasks/c')).toBeUndefined();
+  });
+
+  it('readers that captured generation before a write detect the change and skip set', () => {
+    // Simulates: reader captures gen=0, writes happen (gen becomes 1), reader's set() is skipped.
+    const { cache } = make();
+    expect(cache.generation).toBe(0);
+
+    // Reader A starts a fetch (simulated by capturing the generation).
+    const capturedGen = cache.generation;
+
+    // Meanwhile, someone invalidates /tasks/.
+    cache.set('/tasks/x', 'pre_invalid');
+    cache.invalidatePrefix('/tasks/');
+    expect(cache.generation).toBe(1);
+
+    // Reader A's fetch completes and wants to stamp the cache.
+    // Because generation changed, it must NOT write (stale data).
+    if (cache.generation === capturedGen) {
+      cache.set('/tasks/x', 'stale_data');
+    } else {
+      // Skip — this is what a real TOCTOU guard would do.
+    }
+
+    // The key should still be missing because the set was skipped.
+    expect(cache.getFresh('/tasks/x')).toBeUndefined();
   });
 });

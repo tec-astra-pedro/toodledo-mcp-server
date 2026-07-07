@@ -118,4 +118,8 @@ server invalidate instantly.)
 To disable caching entirely, set `TOODLEDO_CACHE_TTL=0` in the environment;
 every read then hits the network. (This is useful for debugging.)
 
+If `TOODLEDO_CACHE_TTL` is set to a malformed value (e.g., not a number),
+the server warns on stderr and falls back to the 60-second default instead
+of silently disabling caching.
+
 Design and decision records live in [`docs/adr/`](docs/adr/).
