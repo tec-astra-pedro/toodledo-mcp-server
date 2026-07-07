@@ -124,7 +124,6 @@ export async function runAuthorize(): Promise<void> {
 
   const state = generateState();
 
-  // Pass the resolved redirectUri so the authorize URL's redirect_uri matches where we listen.
   const authorizeUrl = buildAuthorizeUrl({ clientId, scope: process.env.TOODLEDO_SCOPE, redirectUri, state });
 
   console.log('Opening browser for Toodledo authorization...');
@@ -134,8 +133,6 @@ export async function runAuthorize(): Promise<void> {
   } else {
     console.log(`Waiting for callback on ${redirectUri}...\n`);
   }
-
-  // Use Node's built-in http module to listen for the OAuth callback.
 
   await new Promise<void>((resolve, reject) => {
     const server = http.createServer(async (req, res) => {
