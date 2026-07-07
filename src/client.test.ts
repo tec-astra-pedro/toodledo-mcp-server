@@ -1017,24 +1017,25 @@ describe('ToodledoClient', () => {
     const cache = new ResponseCache({ ttlMs: 5_000, now: () => now });
     const client = new ToodledoClient(credentials, MOCK_STORE, cache);
 
-    // First call: cold miss → stamps with empty validators.
+    // Seed both collections cold so the later stale reads are genuine validations.
     await client.getTasks();
+    await client.getNotes();
 
-    // Advance past trust window — entry is stale.
+    // Advance past trust window — both entries are stale.
     now = 6_000;
 
-    // Second call: stale hit → triggers /account/get.php for validation.
+    // First stale read (tasks): triggers /account/get.php for validation.
     await client.getTasks();
     expect(accountCount).toBe(1);
 
-    // Third call (notes): also stale, but account snapshot is still fresh (<30s).
+    // Second stale read (notes): also stale, but account snapshot is still fresh (<30s).
     // Should NOT call /account/get.php again — getAccountInfo cached its snapshot.
     await client.getNotes();
     expect(accountCount).toBe(1); // still 1 — snapshot was reused
 
-    // Verify both collections were fetched.
-    expect(tasksCount).toBe(2); // cold miss + stale refetch
-    expect(notesCount).toBe(1); // stale refetch only
+    // Verify both collections were fetched twice (cold + stale refetch).
+    expect(tasksCount).toBe(2);
+    expect(notesCount).toBe(2);
   });
 
   it('distinct params {comp: "0"} and {comp: 0} share a cache entry', async () => {
